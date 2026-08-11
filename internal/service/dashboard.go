@@ -112,6 +112,10 @@ type SalesCompletedItem struct {
 	IsPackage    bool    `json:"is_package"`
 	UserNickname string  `json:"user_nickname,omitempty"`
 	UserPhone    string  `json:"user_phone,omitempty"`
+	PurchaseType    uint8   `json:"purchase_type,omitempty"`
+	ActivityID      *uint64 `json:"activity_id,omitempty"`
+	SaleChannel     string  `json:"sale_channel,omitempty"`
+	SaleChannelText string  `json:"sale_channel_text,omitempty"`
 }
 
 // SalesPendingItem 已付款未履约完成的明细。
@@ -127,6 +131,34 @@ type SalesPendingItem struct {
 	StatusText   string  `json:"status_text"`
 	UserNickname string  `json:"user_nickname,omitempty"`
 	UserPhone    string  `json:"user_phone,omitempty"`
+	PurchaseType    uint8   `json:"purchase_type,omitempty"`
+	ActivityID      *uint64 `json:"activity_id,omitempty"`
+	SaleChannel     string  `json:"sale_channel,omitempty"`
+	SaleChannelText string  `json:"sale_channel_text,omitempty"`
+}
+
+// ResolveSaleChannel 根据订单项购买类型与活动归属解析销售渠道。
+// 返回 (channel, text)：channel 取值 deal / group / activity_deal / activity_group。
+// 未知 purchaseType 一律按 deal 处理（前端钻取会兜底为团购）。
+func ResolveSaleChannel(purchaseType uint8, activityID *uint64) (string, string) {
+	hasAct := activityID != nil && *activityID > 0
+	switch {
+	case purchaseType == model.PurchaseTypeGroup && hasAct:
+		return "activity_group", "互动拼团"
+	case purchaseType == model.PurchaseTypeGroup:
+		return "group", "拼团"
+	case hasAct:
+		return "activity_deal", "活动直购"
+	default:
+		return "deal", "团购"
+	}
+}
+
+// orderItemSaleMeta 聚合订单项成交单价、购买类型与活动归属。
+type orderItemSaleMeta struct {
+	UnitPrice    float64
+	PurchaseType uint8
+	ActivityID   *uint64
 }
 
 type SalesReportFilter struct {
@@ -347,7 +379,7 @@ func (s *DashboardService) listCompletedBagSalesItems(filter SalesReportFilter) 
 		return nil, 0, 0, err
 	}
 
-	unitByKey := s.loadOrderItemUnitPrices(usages)
+	unitByKey := s.loadOrderItemSaleMeta(usages)
 
 	items := make([]SalesCompletedItem, 0, len(usages))
 	var sum float64
@@ -361,9 +393,15 @@ func (s *DashboardService) listCompletedBagSalesItems(filter SalesReportFilter) 
 			isPkg = u.Product.ItemType == model.ProductItemTypePackage
 		}
 		unitPrice := catalogPrice
+		var pt uint8
+		var actID *uint64
 		if u.SourceOrderID != nil {
-			if up, ok := unitByKey[orderProductKey(*u.SourceOrderID, u.ProductID)]; ok && up > 0 {
-				unitPrice = up
+			if m, ok := unitByKey[orderProductKey(*u.SourceOrderID, u.ProductID)]; ok {
+				if m.UnitPrice > 0 {
+					unitPrice = m.UnitPrice
+				}
+				pt = m.PurchaseType
+				actID = m.ActivityID
 			}
 		}
 		amount := roundMoney(unitPrice * float64(u.Quantity))
@@ -379,6 +417,7 @@ func (s *DashboardService) listCompletedBagSalesItems(filter SalesReportFilter) 
 			pkgText = u.PackageSelections.SummaryText()
 		}
 		nick, phone := s.lookupAccountBrief(u.AccountID)
+		ch, chText := ResolveSaleChannel(pt, actID)
 		items = append(items, SalesCompletedItem{
 			UsageID: u.ID, ProductID: u.ProductID, ProductName: name,
 			Quantity: u.Quantity, UnitPrice: unitPrice, Amount: amount,
@@ -386,6 +425,8 @@ func (s *DashboardService) listCompletedBagSalesItems(filter SalesReportFilter) 
 			CompletedAt: u.UpdatedAt.Format("2006-01-02 15:04"),
 			PackageText: pkgText, IsPackage: isPkg,
 			UserNickname: nick, UserPhone: phone,
+			PurchaseType: pt, ActivityID: actID,
+			SaleChannel: ch, SaleChannelText: chText,
 		})
 	}
 	return items, total, sum, nil
@@ -498,7 +539,7 @@ func (s *DashboardService) listPendingBagSalesItems(filter SalesReportFilter) ([
 		Find(&usages).Error; err != nil {
 		return nil, 0, 0, err
 	}
-	unitByKey := s.loadOrderItemUnitPrices(usages)
+	metaByKey := s.loadOrderItemSaleMeta(usages)
 	items := make([]SalesPendingItem, 0, len(usages))
 	var sum float64
 	for _, u := range usages {
@@ -509,20 +550,29 @@ func (s *DashboardService) listPendingBagSalesItems(filter SalesReportFilter) ([
 			catalogPrice = u.Product.Price
 		}
 		unitPrice := catalogPrice
+		var pt uint8
+		var actID *uint64
 		if u.SourceOrderID != nil {
-			if up, ok := unitByKey[orderProductKey(*u.SourceOrderID, u.ProductID)]; ok && up > 0 {
-				unitPrice = up
+			if m, ok := metaByKey[orderProductKey(*u.SourceOrderID, u.ProductID)]; ok {
+				if m.UnitPrice > 0 {
+					unitPrice = m.UnitPrice
+				}
+				pt = m.PurchaseType
+				actID = m.ActivityID
 			}
 		}
 		amount := roundMoney(unitPrice * float64(u.Quantity))
 		sum += amount
 		nick, phone := s.lookupAccountBrief(u.AccountID)
+		ch, chText := ResolveSaleChannel(pt, actID)
 		items = append(items, SalesPendingItem{
 			Source: "usage", ID: u.ID, ProductID: u.ProductID, ProductName: name,
 			Quantity: u.Quantity, UnitPrice: unitPrice, Amount: amount,
 			PurchasedAt: u.CreatedAt.Format("2006-01-02 15:04"),
 			StatusText:  model.InventoryUsageStatusText(u.Status),
 			UserNickname: nick, UserPhone: phone,
+			PurchaseType: pt, ActivityID: actID,
+			SaleChannel: ch, SaleChannelText: chText,
 		})
 	}
 	return items, total, sum, nil
@@ -633,6 +683,7 @@ func (s *DashboardService) listPendingInventorySalesItems(filter SalesReportFilt
 			PurchasedAt: inv.UpdatedAt.Format("2006-01-02 15:04"),
 			StatusText:  "已入背包·待使用",
 			UserNickname: nick, UserPhone: phone,
+			SaleChannel: "deal", SaleChannelText: "团购",
 		})
 	}
 	return items, total, sum, nil
@@ -670,7 +721,18 @@ func orderProductKey(orderID, productID uint64) string {
 }
 
 func (s *DashboardService) loadOrderItemUnitPrices(usages []model.UserInventoryUsage) map[string]float64 {
-	out := map[string]float64{}
+	meta := s.loadOrderItemSaleMeta(usages)
+	out := make(map[string]float64, len(meta))
+	for k, v := range meta {
+		out[k] = v.UnitPrice
+	}
+	return out
+}
+
+// loadOrderItemSaleMeta 批量加载来源订单项的成交单价、购买类型与活动归属。
+// 同一 (order_id, product_id) 仅保留首条；usages 缺失来源订单时返回空 map。
+func (s *DashboardService) loadOrderItemSaleMeta(usages []model.UserInventoryUsage) map[string]orderItemSaleMeta {
+	out := map[string]orderItemSaleMeta{}
 	orderIDs := make([]uint64, 0)
 	seen := map[uint64]struct{}{}
 	for _, u := range usages {
@@ -688,7 +750,7 @@ func (s *DashboardService) loadOrderItemUnitPrices(usages []model.UserInventoryU
 	}
 	var items []model.OrderItem
 	if err := query.NotDeleted(s.freshDB().Model(&model.OrderItem{})).
-		Select("order_id", "product_id", "unit_price", "subtotal", "quantity").
+		Select("order_id", "product_id", "unit_price", "subtotal", "quantity", "purchase_type", "activity_id").
 		Where("order_id IN ?", orderIDs).
 		Find(&items).Error; err != nil {
 		return out
@@ -700,7 +762,11 @@ func (s *DashboardService) loadOrderItemUnitPrices(usages []model.UserInventoryU
 		}
 		key := orderProductKey(it.OrderID, it.ProductID)
 		if _, exists := out[key]; !exists {
-			out[key] = roundMoney(unit)
+			out[key] = orderItemSaleMeta{
+				UnitPrice:    roundMoney(unit),
+				PurchaseType: it.PurchaseType,
+				ActivityID:   it.ActivityID,
+			}
 		}
 	}
 	return out
