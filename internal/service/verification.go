@@ -375,10 +375,13 @@ type VerificationListFilter struct {
 }
 
 func (s *VerificationService) effectiveVerificationBase() *gorm.DB {
-	return query.NotDeleted(s.DB.Session(&gorm.Session{NewDB: true}).Model(&model.VerificationRecord{})).
+	// 必须限定 verification_record.is_deleted：JOIN 多表后裸 is_deleted 会触发 MySQL Error 1052 ambiguous
+	return s.DB.Session(&gorm.Session{NewDB: true}).
+		Model(&model.VerificationRecord{}).
 		Joins("JOIN verification_code vc ON vc.id = verification_record.verification_code_id AND vc.is_deleted = ?", model.NotDeleted).
 		Joins("JOIN user_inventory_usage u ON u.id = vc.inventory_usage_id AND u.is_deleted = ? AND u.status = ?",
-			model.NotDeleted, model.InventoryUsageCompleted)
+			model.NotDeleted, model.InventoryUsageCompleted).
+		Where("verification_record.is_deleted = ?", model.NotDeleted)
 }
 
 func (s *VerificationService) ListByMerchant(merchantID uint64, page, pageSize int) ([]VerificationRecordView, int64, error) {
