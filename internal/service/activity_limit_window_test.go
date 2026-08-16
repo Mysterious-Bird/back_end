@@ -107,3 +107,140 @@ func TestOrderStatusesExcludedAreIntSlice(t *testing.T) {
 		t.Fatalf("orderStatusesExcludedFromBoughtQty must be []int for GORM IN clause, got %T", v)
 	}
 }
+
+func TestClampDayOfMonth(t *testing.T) {
+	cases := []struct {
+		name  string
+		year  int
+		month time.Month
+		day   int
+		want  int
+	}{
+		{"normal", 2026, 7, 15, 15},
+		{"jan-31", 2026, 1, 31, 31},
+		{"feb-31-leap", 2024, 2, 31, 29},  // 2024 is leap
+		{"feb-31-nonleap", 2026, 2, 31, 28},
+		{"apr-31", 2026, 4, 31, 30},
+		{"day-0-clamped-to-1", 2026, 5, 0, 1},
+		{"day-negative-clamped-to-1", 2026, 5, -3, 1},
+		{"day-32-clamped-to-month", 2026, 6, 32, 30},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := clampDayOfMonth(c.year, c.month, c.day)
+			if got != c.want {
+				t.Fatalf("clampDayOfMonth(%d,%d,%d)=%d want %d", c.year, c.month, c.day, got, c.want)
+			}
+		})
+	}
+}
+
+func TestCalendarWindowFor_Week_WednesdayNoon(t *testing.T) {
+	loc := time.Local
+	cfg := limitRefreshConfig{WeeklyWeekday: 3, WeeklyTime: "12:00:00"} // Wed
+	// Thu 2026-07-23 13:00 → [Wed 07-22 12:00, Wed 07-29 12:00)
+	now := time.Date(2026, 7, 23, 13, 0, 0, 0, loc)
+	start, end := calendarWindowFor(now, "week", cfg)
+	wantStart := time.Date(2026, 7, 22, 12, 0, 0, 0, loc)
+	wantEnd := time.Date(2026, 7, 29, 12, 0, 0, 0, loc)
+	if !start.Equal(wantStart) || !end.Equal(wantEnd) {
+		t.Fatalf("got [%v,%v) want [%v,%v)", start, end, wantStart, wantEnd)
+	}
+}
+
+func TestCalendarWindowFor_Week_WednesdayBeforeRefresh(t *testing.T) {
+	loc := time.Local
+	cfg := limitRefreshConfig{WeeklyWeekday: 3, WeeklyTime: "12:00:00"} // Wed
+	// Wed 2026-07-22 11:00 (before refresh) → previous week [Wed 07-15 12:00, Wed 07-22 12:00)
+	now := time.Date(2026, 7, 22, 11, 0, 0, 0, loc)
+	start, end := calendarWindowFor(now, "week", cfg)
+	wantStart := time.Date(2026, 7, 15, 12, 0, 0, 0, loc)
+	wantEnd := time.Date(2026, 7, 22, 12, 0, 0, 0, loc)
+	if !start.Equal(wantStart) || !end.Equal(wantEnd) {
+		t.Fatalf("got [%v,%v) want [%v,%v)", start, end, wantStart, wantEnd)
+	}
+}
+
+func TestCalendarWindowFor_Month_Day31_FebruaryClamp(t *testing.T) {
+	loc := time.Local
+	cfg := limitRefreshConfig{MonthlyDay: 31, MonthlyTime: "10:00:00"}
+	now := time.Date(2026, 2, 15, 12, 0, 0, 0, loc)
+	start, end := calendarWindowFor(now, "month", cfg)
+	wantStart := time.Date(2026, 1, 31, 10, 0, 0, 0, loc)
+	wantEnd := time.Date(2026, 2, 28, 10, 0, 0, 0, loc) // 2026 not leap
+	if !start.Equal(wantStart) || !end.Equal(wantEnd) {
+		t.Fatalf("got [%v,%v) want [%v,%v)", start, end, wantStart, wantEnd)
+	}
+}
+
+func TestCalendarWindowFor_Month_Day31_AfterAnchor(t *testing.T) {
+	loc := time.Local
+	cfg := limitRefreshConfig{MonthlyDay: 31, MonthlyTime: "10:00:00"}
+	// Mar 31 11:00 (after Mar 31 10:00 anchor, clamped to Mar 31) → [Mar 31 10:00, Apr 30 10:00)
+	now := time.Date(2026, 3, 31, 11, 0, 0, 0, loc)
+	start, end := calendarWindowFor(now, "month", cfg)
+	wantStart := time.Date(2026, 3, 31, 10, 0, 0, 0, loc)
+	wantEnd := time.Date(2026, 4, 30, 10, 0, 0, 0, loc) // Apr has 30 days
+	if !start.Equal(wantStart) || !end.Equal(wantEnd) {
+		t.Fatalf("got [%v,%v) want [%v,%v)", start, end, wantStart, wantEnd)
+	}
+}
+
+func TestCalendarWindowFor_Day_UsesDailyTime(t *testing.T) {
+	loc := time.Local
+	cfg := limitRefreshConfig{DailyTime: "12:00:00"}
+	now := time.Date(2026, 7, 30, 13, 0, 0, 0, loc)
+	start, end := calendarWindowFor(now, "day", cfg)
+	wantStart := time.Date(2026, 7, 30, 12, 0, 0, 0, loc)
+	wantEnd := time.Date(2026, 7, 31, 12, 0, 0, 0, loc)
+	if !start.Equal(wantStart) || !end.Equal(wantEnd) {
+		t.Fatalf("got [%v,%v) want [%v,%v)", start, end, wantStart, wantEnd)
+	}
+}
+
+func TestCalendarWindowFor_UnknownUnitReturnsZero(t *testing.T) {
+	loc := time.Local
+	cfg := limitRefreshConfig{DailyTime: "12:00:00"}
+	now := time.Date(2026, 7, 30, 13, 0, 0, 0, loc)
+	start, end := calendarWindowFor(now, "year", cfg)
+	if !start.IsZero() || !end.IsZero() {
+		t.Fatalf("unknown unit: got [%v,%v) want zero", start, end)
+	}
+}
+
+func TestLimitRefreshFromProduct_Nil(t *testing.T) {
+	cfg := limitRefreshFromProduct(nil)
+	if cfg.DailyTime != "00:00:00" || cfg.WeeklyWeekday != 1 || cfg.WeeklyTime != "00:00:00" ||
+		cfg.MonthlyDay != 1 || cfg.MonthlyTime != "00:00:00" {
+		t.Fatalf("nil product cfg should be all defaults, got %+v", cfg)
+	}
+}
+
+func TestLimitRefreshFromProduct_PassesThrough(t *testing.T) {
+	ap := &model.ActivityProduct{
+		DailyRefreshTime:     "09:00:00",
+		WeeklyRefreshWeekday: 3,
+		WeeklyRefreshTime:    "12:30:00",
+		MonthlyRefreshDay:    15,
+		MonthlyRefreshTime:   "08:00:00",
+	}
+	cfg := limitRefreshFromProduct(ap)
+	if cfg.DailyTime != "09:00:00" || cfg.WeeklyWeekday != 3 || cfg.WeeklyTime != "12:30:00" ||
+		cfg.MonthlyDay != 15 || cfg.MonthlyTime != "08:00:00" {
+		t.Fatalf("cfg mismatch: got %+v", cfg)
+	}
+}
+
+func TestLimitRefreshFromProduct_ClampsInvalidWeekdayAndDay(t *testing.T) {
+	ap := &model.ActivityProduct{
+		WeeklyRefreshWeekday: 9,
+		MonthlyRefreshDay:    40,
+	}
+	cfg := limitRefreshFromProduct(ap)
+	if cfg.WeeklyWeekday != 1 {
+		t.Fatalf("invalid weekday should clamp to 1, got %d", cfg.WeeklyWeekday)
+	}
+	if cfg.MonthlyDay != 1 {
+		t.Fatalf("invalid monthly day should clamp to 1, got %d", cfg.MonthlyDay)
+	}
+}

@@ -30,45 +30,144 @@ func refreshInstantOnDate(d time.Time, refreshTime string) time.Time {
 	return time.Date(y, m, day, parsed.Hour(), parsed.Minute(), parsed.Second(), 0, loc)
 }
 
-// calendarWindowAt returns a half-open period [start, end) for unit
-// "day" | "week" | "month" aligned to daily_refresh_time.
-// Week starts Monday at refresh; month starts on the 1st at refresh.
-// Invalid refreshTime falls back to 00:00:00. Unknown unit returns zero times.
-func calendarWindowAt(now time.Time, unit string, refreshTime string) (start, end time.Time) {
+// parseClockParts parses "HH:MM:SS" into hour/min/sec; invalid → 00:00:00.
+func parseClockParts(s string) (h, m, sec int) {
+	rt, err := NormalizeDailyRefreshTime(s)
+	if err != nil {
+		rt = "00:00:00"
+	}
+	parsed, _ := time.Parse("15:04:05", rt)
+	return parsed.Hour(), parsed.Minute(), parsed.Second()
+}
+
+// limitRefreshConfig carries per-product refresh clock config for day/week/month
+// windows. Day uses DailyTime; week uses (WeeklyWeekday, WeeklyTime);
+// month uses (MonthlyDay, MonthlyTime) with end-of-month clamping.
+type limitRefreshConfig struct {
+	DailyTime     string
+	WeeklyWeekday uint8 // 1=Mon..7=Sun
+	WeeklyTime    string
+	MonthlyDay    uint8 // 1-31
+	MonthlyTime   string
+}
+
+// limitRefreshFromProduct builds a limitRefreshConfig from an ActivityProduct,
+// applying sane defaults/clamps for missing or out-of-range values.
+func limitRefreshFromProduct(ap *model.ActivityProduct) limitRefreshConfig {
+	if ap == nil {
+		return limitRefreshConfig{
+			DailyTime: "00:00:00", WeeklyWeekday: 1, WeeklyTime: "00:00:00",
+			MonthlyDay: 1, MonthlyTime: "00:00:00",
+		}
+	}
+	wd := ap.WeeklyRefreshWeekday
+	if wd < 1 || wd > 7 {
+		wd = 1
+	}
+	md := ap.MonthlyRefreshDay
+	if md < 1 || md > 31 {
+		md = 1
+	}
+	return limitRefreshConfig{
+		DailyTime:     ap.DailyRefreshTime,
+		WeeklyWeekday: wd,
+		WeeklyTime:    ap.WeeklyRefreshTime,
+		MonthlyDay:    md,
+		MonthlyTime:   ap.MonthlyRefreshTime,
+	}
+}
+
+// clampDayOfMonth returns day clamped to [1, lastDayOfMonth]. day<1 → 1;
+// day>lastDay → lastDay. Handles leap years via Go's date normalization.
+func clampDayOfMonth(year int, month time.Month, day int) int {
+	if day < 1 {
+		return 1
+	}
+	// Last day of month = day 1 of next month minus 1 day.
+	firstNext := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
+	lastDay := firstNext.AddDate(0, 0, -1).Day()
+	if day > lastDay {
+		return lastDay
+	}
+	return day
+}
+
+// monthAnchor returns the clamped refresh anchor for (year, month) using the
+// configured MonthlyDay + MonthlyTime in loc.
+func monthAnchor(year int, month time.Month, cfg limitRefreshConfig, loc *time.Location) time.Time {
+	day := clampDayOfMonth(year, month, int(cfg.MonthlyDay))
+	h, mi, s := parseClockParts(cfg.MonthlyTime)
+	return time.Date(year, month, day, h, mi, s, 0, loc)
+}
+
+// calendarWindowFor returns a half-open period [start, end) for unit
+// "day" | "week" | "month" using the per-product refresh config cfg.
+// Day uses cfg.DailyTime; week uses (cfg.WeeklyWeekday, cfg.WeeklyTime);
+// month uses (cfg.MonthlyDay, cfg.MonthlyTime) with end-of-month clamping.
+// Unknown unit returns zero times.
+func calendarWindowFor(now time.Time, unit string, cfg limitRefreshConfig) (start, end time.Time) {
 	loc := now.Location()
 	y, m, d := now.Date()
 	midnight := time.Date(y, m, d, 0, 0, 0, 0, loc)
 
 	switch unit {
 	case "day":
-		refreshToday := refreshInstantOnDate(midnight, refreshTime)
+		refreshToday := refreshInstantOnDate(midnight, cfg.DailyTime)
 		start = refreshToday
 		if now.Before(refreshToday) {
 			start = refreshToday.AddDate(0, 0, -1)
 		}
 		return start, start.AddDate(0, 0, 1)
 	case "week":
-		offset := (int(now.Weekday()) + 6) % 7
-		monday := midnight.AddDate(0, 0, -offset)
-		refreshMonday := refreshInstantOnDate(monday, refreshTime)
-		start = refreshMonday
-		if now.Before(refreshMonday) {
-			start = refreshMonday.AddDate(0, 0, -7)
+		// ISO weekday: Mon=1..Sun=7. Go Weekday: Sun=0..Sat=6.
+		isoToday := ((int(now.Weekday()) + 6) % 7) + 1 // Mon=1..Sun=7
+		offsetFromToday := int(cfg.WeeklyWeekday) - isoToday
+		anchorDate := midnight.AddDate(0, 0, offsetFromToday)
+		h, mi, s := parseClockParts(cfg.WeeklyTime)
+		anchor := time.Date(anchorDate.Year(), anchorDate.Month(), anchorDate.Day(), h, mi, s, 0, loc)
+		start = anchor
+		if now.Before(anchor) {
+			start = anchor.AddDate(0, 0, -7)
 		}
 		return start, start.AddDate(0, 0, 7)
 	case "month":
-		firstOfMonth := time.Date(y, m, 1, 0, 0, 0, 0, loc)
-		refreshFirst := refreshInstantOnDate(firstOfMonth, refreshTime)
-		start = refreshFirst
-		if now.Before(refreshFirst) {
-			prev := firstOfMonth.AddDate(0, -1, 0)
-			start = refreshInstantOnDate(prev, refreshTime)
+		anchor := monthAnchor(y, m, cfg, loc)
+		if now.Before(anchor) {
+			// Previous month's clamped anchor → this month's clamped anchor.
+			prevFirst := time.Date(y, m, 1, 0, 0, 0, 0, loc).AddDate(0, -1, 0)
+			start = monthAnchor(prevFirst.Year(), prevFirst.Month(), cfg, loc)
+			end = anchor
+		} else {
+			// This month's clamped anchor → next month's clamped anchor.
+			nextFirst := time.Date(y, m, 1, 0, 0, 0, 0, loc).AddDate(0, 1, 0)
+			start = anchor
+			end = monthAnchor(nextFirst.Year(), nextFirst.Month(), cfg, loc)
 		}
-		endMonth := time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, loc).AddDate(0, 1, 0)
-		return start, refreshInstantOnDate(endMonth, refreshTime)
+		return start, end
 	default:
 		return time.Time{}, time.Time{}
 	}
+}
+
+// calendarWindowAt returns a half-open period [start, end) for unit
+// "day" | "week" | "month" aligned to refreshTime.
+//
+// Day uses refreshTime directly. Week/month delegate to calendarWindowFor
+// with weekday=1 (Monday) / day=1, both at refreshTime — i.e. week starts
+// Monday at refresh; month starts on the 1st at refresh. This preserves the
+// legacy Monday/first-of-month semantics for callers that have not migrated
+// to per-product refresh config. New week/month callers should use
+// calendarWindowFor with a limitRefreshConfig from limitRefreshFromProduct.
+// Invalid refreshTime falls back to 00:00:00. Unknown unit returns zero times.
+func calendarWindowAt(now time.Time, unit string, refreshTime string) (start, end time.Time) {
+	cfg := limitRefreshConfig{
+		DailyTime:     refreshTime,
+		WeeklyWeekday: 1,
+		WeeklyTime:    refreshTime,
+		MonthlyDay:    1,
+		MonthlyTime:   refreshTime,
+	}
+	return calendarWindowFor(now, unit, cfg)
 }
 
 // calendarWindow is midnight-based; prefer calendarWindowAt with DailyRefreshTime.
@@ -207,13 +306,14 @@ func computeActivityRemaining(
 		{ap.MonthlyMax, "month", "monthly"},
 		{activityMax, "", "activity_max"},
 	}
+	cfg := limitRefreshFromProduct(ap)
 	for _, lim := range lims {
 		if lim.max == 0 {
 			continue
 		}
 		var start, end time.Time
 		if lim.unit != "" {
-			start, end = calendarWindowAt(now, lim.unit, ap.DailyRefreshTime)
+			start, end = calendarWindowFor(now, lim.unit, cfg)
 		}
 		bought, err := sumBoughtQtyInWindow(db, *accountID, ap.ID, start, end)
 		if err != nil {
