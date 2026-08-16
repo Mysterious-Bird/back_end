@@ -54,6 +54,10 @@ type ActivityProductInput struct {
 	RegisterMax             uint32
 	PlatformDailyMax        uint32
 	DailyRefreshTime        string
+	WeeklyRefreshWeekday    uint8
+	WeeklyRefreshTime       string
+	MonthlyRefreshDay       uint8
+	MonthlyRefreshTime      string
 	EnableGroupBuy          uint8
 	GroupBuyPrice           *float64
 	GroupBuyTargetCount     *uint32
@@ -80,6 +84,10 @@ type UpdateActivityProductPatch struct {
 	RegisterMax             *uint32
 	PlatformDailyMax        *uint32
 	DailyRefreshTime        *string
+	WeeklyRefreshWeekday    *uint8
+	WeeklyRefreshTime       *string
+	MonthlyRefreshDay       *uint8
+	MonthlyRefreshTime      *string
 	EnableGroupBuy          *uint8
 	GroupBuyPrice           *float64
 	GroupBuyTargetCount     *uint32
@@ -312,6 +320,26 @@ func (s *ActivityService) AddProduct(activityID uint64, input ActivityProductInp
 		return nil, err
 	}
 	input.DailyRefreshTime = rt
+	wrt, err := NormalizeDailyRefreshTime(input.WeeklyRefreshTime)
+	if err != nil {
+		return nil, fmt.Errorf("%w: weekly_refresh_time 格式无效", ErrInvalidProductArg)
+	}
+	input.WeeklyRefreshTime = wrt
+	mrt, err := NormalizeDailyRefreshTime(input.MonthlyRefreshTime)
+	if err != nil {
+		return nil, fmt.Errorf("%w: monthly_refresh_time 格式无效", ErrInvalidProductArg)
+	}
+	input.MonthlyRefreshTime = mrt
+	wd, err := normalizeWeeklyWeekday(input.WeeklyRefreshWeekday)
+	if err != nil {
+		return nil, err
+	}
+	input.WeeklyRefreshWeekday = wd
+	md, err := normalizeMonthlyDay(input.MonthlyRefreshDay)
+	if err != nil {
+		return nil, err
+	}
+	input.MonthlyRefreshDay = md
 	var product model.Product
 	pq := query.NotDeleted(s.DB).Where("id = ?", input.ProductID)
 	// 商家专场活动仍限制同店商品；平台活动（merchant_id=0）可跨店挂品
@@ -353,6 +381,8 @@ func (s *ActivityService) AddProduct(activityID uint64, input ActivityProductInp
 		DailyMax: input.DailyMax, WeeklyMax: input.WeeklyMax, MonthlyMax: input.MonthlyMax,
 		ActivityMax: input.ActivityMax, RegisterHours: input.RegisterHours, RegisterMax: input.RegisterMax,
 		PlatformDailyMax: input.PlatformDailyMax, DailyRefreshTime: input.DailyRefreshTime,
+		WeeklyRefreshWeekday: input.WeeklyRefreshWeekday, WeeklyRefreshTime: input.WeeklyRefreshTime,
+		MonthlyRefreshDay: input.MonthlyRefreshDay, MonthlyRefreshTime: input.MonthlyRefreshTime,
 		EnableGroupBuy: input.EnableGroupBuy, GroupBuyPrice: input.GroupBuyPrice,
 		GroupBuyTargetCount:     input.GroupBuyTargetCount,
 		GroupBuyAllowRepeat:     input.GroupBuyAllowRepeat,
@@ -437,6 +467,8 @@ func activityProductUpdates(input ActivityProductInput, maxJoins uint32, status 
 		"daily_max": input.DailyMax, "weekly_max": input.WeeklyMax, "monthly_max": input.MonthlyMax,
 		"activity_max": input.ActivityMax, "register_hours": input.RegisterHours, "register_max": input.RegisterMax,
 		"platform_daily_max": input.PlatformDailyMax, "daily_refresh_time": input.DailyRefreshTime,
+		"weekly_refresh_weekday": input.WeeklyRefreshWeekday, "weekly_refresh_time": input.WeeklyRefreshTime,
+		"monthly_refresh_day": input.MonthlyRefreshDay, "monthly_refresh_time": input.MonthlyRefreshTime,
 		"enable_group_buy": input.EnableGroupBuy, "group_buy_price": input.GroupBuyPrice,
 		"group_buy_target_count":       input.GroupBuyTargetCount,
 		"group_buy_allow_repeat":       input.GroupBuyAllowRepeat,
@@ -472,6 +504,26 @@ func (s *ActivityService) UpdateProductInActivity(activityID, apID uint64, patch
 		return nil, err
 	}
 	merged.DailyRefreshTime = rt
+	wrt, err := NormalizeDailyRefreshTime(merged.WeeklyRefreshTime)
+	if err != nil {
+		return nil, fmt.Errorf("%w: weekly_refresh_time 格式无效", ErrInvalidProductArg)
+	}
+	merged.WeeklyRefreshTime = wrt
+	mrt, err := NormalizeDailyRefreshTime(merged.MonthlyRefreshTime)
+	if err != nil {
+		return nil, fmt.Errorf("%w: monthly_refresh_time 格式无效", ErrInvalidProductArg)
+	}
+	merged.MonthlyRefreshTime = mrt
+	wd, err := normalizeWeeklyWeekday(merged.WeeklyRefreshWeekday)
+	if err != nil {
+		return nil, err
+	}
+	merged.WeeklyRefreshWeekday = wd
+	md, err := normalizeMonthlyDay(merged.MonthlyRefreshDay)
+	if err != nil {
+		return nil, err
+	}
+	merged.MonthlyRefreshDay = md
 	maxJoins := merged.GroupBuyMaxJoinsPerUser
 	status := merged.Status
 	if status == 0 {
@@ -489,6 +541,8 @@ func (p UpdateActivityProductPatch) hasField() bool {
 		p.PerUserMaxOrders != nil || p.DailyMax != nil || p.WeeklyMax != nil ||
 		p.MonthlyMax != nil || p.ActivityMax != nil || p.RegisterHours != nil ||
 		p.RegisterMax != nil || p.PlatformDailyMax != nil || p.DailyRefreshTime != nil ||
+		p.WeeklyRefreshWeekday != nil || p.WeeklyRefreshTime != nil ||
+		p.MonthlyRefreshDay != nil || p.MonthlyRefreshTime != nil ||
 		p.EnableGroupBuy != nil || p.GroupBuyPrice != nil ||
 		p.GroupBuyTargetCount != nil || p.GroupBuyAllowRepeat != nil ||
 		p.GroupBuyMaxJoinsPerUser != nil || p.GroupBuyMaxConcurrentTeams != nil || p.ExpireDays != nil ||
@@ -509,6 +563,10 @@ func activityProductInputToPatch(input ActivityProductInput) UpdateActivityProdu
 		RegisterMax:             &input.RegisterMax,
 		PlatformDailyMax:        &input.PlatformDailyMax,
 		DailyRefreshTime:        &input.DailyRefreshTime,
+		WeeklyRefreshWeekday:    &input.WeeklyRefreshWeekday,
+		WeeklyRefreshTime:       &input.WeeklyRefreshTime,
+		MonthlyRefreshDay:       &input.MonthlyRefreshDay,
+		MonthlyRefreshTime:      &input.MonthlyRefreshTime,
 		EnableGroupBuy:          &input.EnableGroupBuy,
 		GroupBuyPrice:           input.GroupBuyPrice,
 		GroupBuyTargetCount:     input.GroupBuyTargetCount,
@@ -538,6 +596,10 @@ func mergeActivityProductPatch(ap *model.ActivityProduct, patch UpdateActivityPr
 		RegisterMax:             ap.RegisterMax,
 		PlatformDailyMax:        ap.PlatformDailyMax,
 		DailyRefreshTime:        ap.DailyRefreshTime,
+		WeeklyRefreshWeekday:    ap.WeeklyRefreshWeekday,
+		WeeklyRefreshTime:       ap.WeeklyRefreshTime,
+		MonthlyRefreshDay:       ap.MonthlyRefreshDay,
+		MonthlyRefreshTime:       ap.MonthlyRefreshTime,
 		EnableGroupBuy:          ap.EnableGroupBuy,
 		GroupBuyPrice:           ap.GroupBuyPrice,
 		GroupBuyTargetCount:     ap.GroupBuyTargetCount,
@@ -584,6 +646,18 @@ func mergeActivityProductPatch(ap *model.ActivityProduct, patch UpdateActivityPr
 	}
 	if patch.DailyRefreshTime != nil {
 		merged.DailyRefreshTime = *patch.DailyRefreshTime
+	}
+	if patch.WeeklyRefreshWeekday != nil {
+		merged.WeeklyRefreshWeekday = *patch.WeeklyRefreshWeekday
+	}
+	if patch.WeeklyRefreshTime != nil {
+		merged.WeeklyRefreshTime = *patch.WeeklyRefreshTime
+	}
+	if patch.MonthlyRefreshDay != nil {
+		merged.MonthlyRefreshDay = *patch.MonthlyRefreshDay
+	}
+	if patch.MonthlyRefreshTime != nil {
+		merged.MonthlyRefreshTime = *patch.MonthlyRefreshTime
 	}
 	if patch.EnableGroupBuy != nil {
 		merged.EnableGroupBuy = *patch.EnableGroupBuy
@@ -1387,6 +1461,18 @@ func validateActivityProductInput(input ActivityProductInput) error {
 	if _, err := NormalizeDailyRefreshTime(input.DailyRefreshTime); err != nil {
 		return err
 	}
+	if _, err := NormalizeDailyRefreshTime(input.WeeklyRefreshTime); err != nil {
+		return fmt.Errorf("%w: weekly_refresh_time 格式无效", ErrInvalidProductArg)
+	}
+	if _, err := NormalizeDailyRefreshTime(input.MonthlyRefreshTime); err != nil {
+		return fmt.Errorf("%w: monthly_refresh_time 格式无效", ErrInvalidProductArg)
+	}
+	if _, err := normalizeWeeklyWeekday(input.WeeklyRefreshWeekday); err != nil {
+		return err
+	}
+	if _, err := normalizeMonthlyDay(input.MonthlyRefreshDay); err != nil {
+		return err
+	}
 	if input.EnableGroupBuy == 1 {
 		if input.GroupBuyPrice == nil || *input.GroupBuyPrice <= 0 {
 			return ErrInvalidProductArg
@@ -1396,4 +1482,24 @@ func validateActivityProductInput(input ActivityProductInput) error {
 		}
 	}
 	return nil
+}
+
+func normalizeWeeklyWeekday(v uint8) (uint8, error) {
+	if v == 0 {
+		return 1, nil
+	}
+	if v < 1 || v > 7 {
+		return 0, fmt.Errorf("%w: weekly_refresh_weekday", ErrInvalidProductArg)
+	}
+	return v, nil
+}
+
+func normalizeMonthlyDay(v uint8) (uint8, error) {
+	if v == 0 {
+		return 1, nil
+	}
+	if v < 1 || v > 31 {
+		return 0, fmt.Errorf("%w: monthly_refresh_day", ErrInvalidProductArg)
+	}
+	return v, nil
 }

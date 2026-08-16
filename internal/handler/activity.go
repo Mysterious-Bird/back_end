@@ -45,6 +45,10 @@ type ActivityProductRequest struct {
 	RegisterMax             uint32   `json:"register_max" example:"0"`
 	PlatformDailyMax        uint32   `json:"platform_daily_max" example:"0"`
 	DailyRefreshTime        string   `json:"daily_refresh_time" example:"00:00:00"`
+	WeeklyRefreshWeekday    uint8    `json:"weekly_refresh_weekday" example:"1"`
+	WeeklyRefreshTime       string   `json:"weekly_refresh_time" example:"00:00:00"`
+	MonthlyRefreshDay       uint8    `json:"monthly_refresh_day" example:"1"`
+	MonthlyRefreshTime      string   `json:"monthly_refresh_time" example:"00:00:00"`
 	EnableGroupBuy          uint8    `json:"enable_group_buy" example:"0"`
 	GroupBuyPrice           *float64 `json:"group_buy_price"`
 	GroupBuyTargetCount     *uint32  `json:"group_buy_target_count"`
@@ -75,6 +79,10 @@ type activityProductAddBody struct {
 	RegisterMax             FlexUInt32      `json:"register_max"`
 	PlatformDailyMax        FlexUInt32      `json:"platform_daily_max"`
 	DailyRefreshTime        string          `json:"daily_refresh_time"`
+	WeeklyRefreshWeekday    FlexUInt8       `json:"weekly_refresh_weekday"`
+	WeeklyRefreshTime       string          `json:"weekly_refresh_time"`
+	MonthlyRefreshDay       FlexUInt8       `json:"monthly_refresh_day"`
+	MonthlyRefreshTime      string          `json:"monthly_refresh_time"`
 	EnableGroupBuy          FlexUInt8       `json:"enable_group_buy"`
 	GroupBuyPrice           FlexFloat64Ptr  `json:"group_buy_price"`
 	GroupBuyTargetCount     FlexUInt32Ptr   `json:"group_buy_target_count"`
@@ -116,6 +124,8 @@ func parseActivityProductAddBody(c *gin.Context) (ActivityProductRequest, error)
 		DailyMax: raw.DailyMax.Uint32(), WeeklyMax: raw.WeeklyMax.Uint32(), MonthlyMax: raw.MonthlyMax.Uint32(),
 		ActivityMax: raw.ActivityMax.Uint32(), RegisterHours: raw.RegisterHours.Uint32(), RegisterMax: raw.RegisterMax.Uint32(),
 		PlatformDailyMax: raw.PlatformDailyMax.Uint32(), DailyRefreshTime: raw.DailyRefreshTime,
+		WeeklyRefreshWeekday: raw.WeeklyRefreshWeekday.Uint8(), WeeklyRefreshTime: raw.WeeklyRefreshTime,
+		MonthlyRefreshDay: raw.MonthlyRefreshDay.Uint8(), MonthlyRefreshTime: raw.MonthlyRefreshTime,
 		EnableGroupBuy: raw.EnableGroupBuy.Uint8(), GroupBuyPrice: raw.GroupBuyPrice.Ptr(),
 		GroupBuyTargetCount: raw.GroupBuyTargetCount.Ptr(), GroupBuyAllowRepeat: raw.GroupBuyAllowRepeat.Uint8(),
 		GroupBuyMaxJoinsPerUser: raw.GroupBuyMaxJoinsPerUser.Uint32(),
@@ -139,6 +149,10 @@ type activityProductUpdateBody struct {
 	RegisterMax             FlexUInt32Ptr        `json:"register_max"`
 	PlatformDailyMax        FlexUInt32Ptr        `json:"platform_daily_max"`
 	DailyRefreshTime        FlexNullableString   `json:"daily_refresh_time"`
+	WeeklyRefreshWeekday    FlexUInt8Ptr         `json:"weekly_refresh_weekday"`
+	WeeklyRefreshTime       FlexNullableString   `json:"weekly_refresh_time"`
+	MonthlyRefreshDay       FlexUInt8Ptr         `json:"monthly_refresh_day"`
+	MonthlyRefreshTime      FlexNullableString   `json:"monthly_refresh_time"`
 	EnableGroupBuy          FlexUInt8Ptr         `json:"enable_group_buy"`
 	GroupBuyPrice           FlexFloat64Ptr `json:"group_buy_price"`
 	GroupBuyTargetCount     FlexUInt32Ptr  `json:"group_buy_target_count"`
@@ -162,6 +176,8 @@ func parseActivityProductUpdateBody(c *gin.Context) (UpdateActivityProductReques
 		DailyMax: raw.DailyMax.Ptr(), WeeklyMax: raw.WeeklyMax.Ptr(), MonthlyMax: raw.MonthlyMax.Ptr(),
 		ActivityMax: raw.ActivityMax.Ptr(), RegisterHours: raw.RegisterHours.Ptr(), RegisterMax: raw.RegisterMax.Ptr(),
 		PlatformDailyMax: raw.PlatformDailyMax.Ptr(), DailyRefreshTime: raw.DailyRefreshTime.Ptr(),
+		WeeklyRefreshWeekday: raw.WeeklyRefreshWeekday.Ptr(), WeeklyRefreshTime: raw.WeeklyRefreshTime.Ptr(),
+		MonthlyRefreshDay: raw.MonthlyRefreshDay.Ptr(), MonthlyRefreshTime: raw.MonthlyRefreshTime.Ptr(),
 		EnableGroupBuy: raw.EnableGroupBuy.Ptr(), GroupBuyPrice: raw.GroupBuyPrice.Ptr(),
 		GroupBuyTargetCount: raw.GroupBuyTargetCount.Ptr(), GroupBuyAllowRepeat: raw.GroupBuyAllowRepeat.Ptr(),
 		GroupBuyMaxJoinsPerUser: raw.GroupBuyMaxJoinsPerUser.Ptr(),
@@ -185,6 +201,10 @@ type UpdateActivityProductRequest struct {
 	RegisterMax             *uint32  `json:"register_max" example:"0"`
 	PlatformDailyMax        *uint32  `json:"platform_daily_max" example:"0"`
 	DailyRefreshTime        *string  `json:"daily_refresh_time" example:"00:00:00"`
+	WeeklyRefreshWeekday    *uint8   `json:"weekly_refresh_weekday" example:"1"`
+	WeeklyRefreshTime       *string  `json:"weekly_refresh_time" example:"00:00:00"`
+	MonthlyRefreshDay       *uint8   `json:"monthly_refresh_day" example:"1"`
+	MonthlyRefreshTime      *string  `json:"monthly_refresh_time" example:"00:00:00"`
 	EnableGroupBuy          *uint8   `json:"enable_group_buy" example:"1"`
 	GroupBuyPrice           *float64 `json:"group_buy_price" example:"7.9"`
 	GroupBuyTargetCount     *uint32  `json:"group_buy_target_count" example:"3"`
@@ -214,6 +234,8 @@ func toActivityProductInput(req ActivityProductRequest) service.ActivityProductI
 		DailyMax: req.DailyMax, WeeklyMax: req.WeeklyMax, MonthlyMax: req.MonthlyMax,
 		ActivityMax: req.ActivityMax, RegisterHours: req.RegisterHours, RegisterMax: req.RegisterMax,
 		PlatformDailyMax: req.PlatformDailyMax, DailyRefreshTime: req.DailyRefreshTime,
+		WeeklyRefreshWeekday: req.WeeklyRefreshWeekday, WeeklyRefreshTime: req.WeeklyRefreshTime,
+		MonthlyRefreshDay: req.MonthlyRefreshDay, MonthlyRefreshTime: req.MonthlyRefreshTime,
 		EnableGroupBuy: req.EnableGroupBuy,
 		GroupBuyPrice: req.GroupBuyPrice, GroupBuyTargetCount: req.GroupBuyTargetCount,
 		GroupBuyAllowRepeat: req.GroupBuyAllowRepeat,
@@ -231,6 +253,8 @@ func toActivityProductPatch(req UpdateActivityProductRequest) service.UpdateActi
 		DailyMax: req.DailyMax, WeeklyMax: req.WeeklyMax, MonthlyMax: req.MonthlyMax,
 		ActivityMax: req.ActivityMax, RegisterHours: req.RegisterHours, RegisterMax: req.RegisterMax,
 		PlatformDailyMax: req.PlatformDailyMax, DailyRefreshTime: req.DailyRefreshTime,
+		WeeklyRefreshWeekday: req.WeeklyRefreshWeekday, WeeklyRefreshTime: req.WeeklyRefreshTime,
+		MonthlyRefreshDay: req.MonthlyRefreshDay, MonthlyRefreshTime: req.MonthlyRefreshTime,
 		EnableGroupBuy: req.EnableGroupBuy, GroupBuyPrice: req.GroupBuyPrice,
 		GroupBuyTargetCount: req.GroupBuyTargetCount, GroupBuyAllowRepeat: req.GroupBuyAllowRepeat,
 		GroupBuyMaxJoinsPerUser: req.GroupBuyMaxJoinsPerUser,
