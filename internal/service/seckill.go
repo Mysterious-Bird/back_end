@@ -190,7 +190,10 @@ func seckillButtonState(limitReached bool, available uint32) string {
 	return "buy"
 }
 
-// seckillDeadlineAt 取该商品当前最短到期：活动结束 ∪ 已启用日/周/月窗结束 ∪（登录且启用时）新用户窗截止。
+// seckillDeadlineAt 取该商品当前最短到期：活动结束 ∪ 已启用日/周/月窗结束 ∪
+// 平台日限窗结束（当 PlatformDailyMax>0）∪（登录且启用时）新用户窗截止。
+// 各窗口均通过 calendarWindowFor + limitRefreshFromProduct 使用商品真实的
+// 每维刷新时间，而非午夜或 DailyRefreshTime 一刀切。
 func seckillDeadlineAt(act *model.Activity, ap *model.ActivityProduct, accountCreatedAt time.Time, loggedIn bool, now time.Time) time.Time {
 	deadline := act.EndAt
 	consider := func(t time.Time) {
@@ -201,16 +204,21 @@ func seckillDeadlineAt(act *model.Activity, ap *model.ActivityProduct, accountCr
 			deadline = t
 		}
 	}
+	cfg := limitRefreshFromProduct(ap)
 	if ap.DailyMax > 0 {
-		_, end := calendarWindow(now, "day")
+		_, end := calendarWindowFor(now, "day", cfg)
 		consider(end)
 	}
 	if ap.WeeklyMax > 0 {
-		_, end := calendarWindow(now, "week")
+		_, end := calendarWindowFor(now, "week", cfg)
 		consider(end)
 	}
 	if ap.MonthlyMax > 0 {
-		_, end := calendarWindow(now, "month")
+		_, end := calendarWindowFor(now, "month", cfg)
+		consider(end)
+	}
+	if ap.PlatformDailyMax > 0 {
+		_, end := calendarWindowFor(now, "day", cfg)
 		consider(end)
 	}
 	if loggedIn && ap.RegisterHours > 0 {

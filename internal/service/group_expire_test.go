@@ -87,3 +87,32 @@ func TestNextLimitRefreshAt(t *testing.T) {
 		t.Fatalf("min of dims: got (%v, %v), want (%v, true)", at, ok, want)
 	}
 }
+
+func TestNextLimitRefreshAt_WeeklyUsesWeekday(t *testing.T) {
+	loc := time.Local
+	now := time.Date(2026, 7, 21, 13, 0, 0, 0, loc) // Tue
+	ap := &model.ActivityProduct{WeeklyMax: 5, WeeklyRefreshWeekday: 3, WeeklyRefreshTime: "12:00:00"}
+	got, ok := nextLimitRefreshAt(now, ap)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	want := time.Date(2026, 7, 22, 12, 0, 0, 0, loc) // Wed
+	if !got.Equal(want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+func TestNextLimitRefreshAt_MonthlyUsesMonthlyDayAndTime(t *testing.T) {
+	loc := time.Local
+	// Jul 21 13:00, monthly anchor on day 15 at 10:00 → next refresh Aug 15 10:00
+	now := time.Date(2026, 7, 21, 13, 0, 0, 0, loc)
+	ap := &model.ActivityProduct{MonthlyMax: 5, MonthlyRefreshDay: 15, MonthlyRefreshTime: "10:00:00"}
+	got, ok := nextLimitRefreshAt(now, ap)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	want := time.Date(2026, 8, 15, 10, 0, 0, 0, loc)
+	if !got.Equal(want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}

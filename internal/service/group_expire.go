@@ -10,13 +10,16 @@ const groupTeamMaxLifetime = 24 * time.Hour
 
 // nextLimitRefreshAt returns the earliest strict-future limit refresh among
 // enabled activity product dimensions (daily / weekly / monthly / platform daily).
-// ok is false when ap is nil or no limit dimension is enabled.
+// Each dimension uses its own per-dimension refresh clock via calendarWindowFor:
+// day/platform use DailyTime; week uses (WeeklyWeekday, WeeklyTime);
+// month uses (MonthlyDay, MonthlyTime). ok is false when ap is nil or no
+// limit dimension is enabled.
 func nextLimitRefreshAt(now time.Time, ap *model.ActivityProduct) (time.Time, bool) {
 	if ap == nil {
 		return time.Time{}, false
 	}
 
-	refresh := ap.DailyRefreshTime
+	cfg := limitRefreshFromProduct(ap)
 	var earliest time.Time
 	found := false
 
@@ -24,7 +27,7 @@ func nextLimitRefreshAt(now time.Time, ap *model.ActivityProduct) (time.Time, bo
 		if max == 0 {
 			return
 		}
-		_, end := calendarWindowAt(now, unit, refresh)
+		_, end := calendarWindowFor(now, unit, cfg)
 		if end.IsZero() {
 			return
 		}
@@ -37,7 +40,7 @@ func nextLimitRefreshAt(now time.Time, ap *model.ActivityProduct) (time.Time, bo
 	consider("day", ap.DailyMax)
 	consider("week", ap.WeeklyMax)
 	consider("month", ap.MonthlyMax)
-	consider("day", ap.PlatformDailyMax)
+	consider("day", ap.PlatformDailyMax) // platform daily shares cfg.DailyTime
 
 	return earliest, found
 }
