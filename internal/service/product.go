@@ -25,49 +25,49 @@ type ProductService struct {
 }
 
 type ProductInput struct {
-	MerchantID     uint64
-	CategoryID     uint64
-	CategoryName   string
-	Name           string
-	Description    *string
-	CoverURL            string
-	Images              []string
-	Price               float64
-	OriginalPrice  *float64
-	Stock          uint32
-	EnableDeal     uint8
-	EnableGroup    uint8
-	EnableTakeout  uint8
-	DealStock      uint32
-	GroupStock     uint32
-	TakeoutStock   uint32
-	IsHot               uint8
-	EnableGroupBuy      uint8
-	EnableCoupon        uint8
-	AllowPickup         uint8
-	AllowDelivery       uint8
-	GroupBuyTargetCount *uint32
-	GroupBuyPrice       *float64
-	GroupBuyAllowRepeat uint8
+	MerchantID                 uint64
+	CategoryID                 uint64
+	CategoryName               string
+	Name                       string
+	Description                *string
+	CoverURL                   string
+	Images                     []string
+	Price                      float64
+	OriginalPrice              *float64
+	Stock                      uint32
+	EnableDeal                 uint8
+	EnableGroup                uint8
+	EnableTakeout              uint8
+	DealStock                  uint32
+	GroupStock                 uint32
+	TakeoutStock               uint32
+	IsHot                      uint8
+	EnableGroupBuy             uint8
+	EnableCoupon               uint8
+	AllowPickup                uint8
+	AllowDelivery              uint8
+	GroupBuyTargetCount        *uint32
+	GroupBuyPrice              *float64
+	GroupBuyAllowRepeat        uint8
 	GroupBuyMaxConcurrentTeams uint32
-	DealExpireDays      *uint32
-	GroupExpireDays     *uint32
-	ItemType            uint8
-	Status              uint8
-	PackageGroups              []PackageGroupInput  // item_type=套餐时必填
-	OptionGroups               *[]OptionGroupInput  // 非 nil 时全量替换规格组（含空切片表示清空）
+	DealExpireDays             *uint32
+	GroupExpireDays            *uint32
+	ItemType                   uint8
+	Status                     uint8
+	PackageGroups              []PackageGroupInput // item_type=套餐时必填
+	OptionGroups               *[]OptionGroupInput // 非 nil 时全量替换规格组（含空切片表示清空）
 	ApplicableMerchantIDs      []uint64
 	HasApplicableMerchantIDs   bool
 	ForceCloseGroup            bool // 管理端确认后强制关闭拼团并退款待成团
 }
 
 type GroupBuyConfigInput struct {
-	EnableGroupBuy      uint8
-	GroupBuyTargetCount *uint32
-	GroupBuyPrice       *float64
-	GroupBuyAllowRepeat *uint8
+	EnableGroupBuy             uint8
+	GroupBuyTargetCount        *uint32
+	GroupBuyPrice              *float64
+	GroupBuyAllowRepeat        *uint8
 	GroupBuyMaxConcurrentTeams *uint32
-	ForceCloseGroup     bool
+	ForceCloseGroup            bool
 }
 
 type ProductListFilter struct {
@@ -85,14 +85,14 @@ type ProductListFilter struct {
 // ProductDetailView 商品详情（管理端/用户端），套餐附带分组，普通商品附带规格组。
 type ProductDetailView struct {
 	model.Product
-	PackageGroups         []PackageGroupView        `json:"package_groups,omitempty"`
-	OptionGroups          []model.ProductOptionGroup  `json:"option_groups,omitempty"`
-	CanGroupBuy           bool                        `json:"can_group_buy"`
-	CanUseCoupon          bool               `json:"can_use_coupon"`
-	GroupBuyID            *uint64            `json:"group_buy_id,omitempty"`
-	SaleOptions           ProductSaleOptions `json:"sale_options"`
-	ApplicableMerchantIDs []uint64                  `json:"applicable_merchant_ids"`
-	ApplicableMerchants   []ApplicableMerchantBrief `json:"applicable_merchants"`
+	PackageGroups         []PackageGroupView         `json:"package_groups,omitempty"`
+	OptionGroups          []model.ProductOptionGroup `json:"option_groups,omitempty"`
+	CanGroupBuy           bool                       `json:"can_group_buy"`
+	CanUseCoupon          bool                       `json:"can_use_coupon"`
+	GroupBuyID            *uint64                    `json:"group_buy_id,omitempty"`
+	SaleOptions           ProductSaleOptions         `json:"sale_options"`
+	ApplicableMerchantIDs []uint64                   `json:"applicable_merchant_ids"`
+	ApplicableMerchants   []ApplicableMerchantBrief  `json:"applicable_merchants"`
 }
 
 func (s *ProductService) Create(input ProductInput, scopeMerchantID *uint64) (*model.Product, error) {
@@ -124,25 +124,25 @@ func (s *ProductService) Create(input ProductInput, scopeMerchantID *uint64) (*m
 	}
 
 	product := model.Product{
-		MerchantID:          merchantID,
-		CategoryID:          categoryID,
-		Name:                input.Name,
-		Description:         input.Description,
-		CoverURL:            resolveProductCover(input.CoverURL, input.Images),
-		Images:              input.Images,
-		Price:               input.Price,
-		OriginalPrice:       input.OriginalPrice,
-		IsHot:               input.IsHot,
-		GroupBuyTargetCount: input.GroupBuyTargetCount,
-		GroupBuyPrice:       input.GroupBuyPrice,
-		GroupBuyAllowRepeat: normalizeGroupBuyAllowRepeat(input.GroupBuyAllowRepeat),
+		MerchantID:                 merchantID,
+		CategoryID:                 categoryID,
+		Name:                       input.Name,
+		Description:                input.Description,
+		CoverURL:                   resolveProductCover(input.CoverURL, input.Images),
+		Images:                     input.Images,
+		Price:                      input.Price,
+		OriginalPrice:              input.OriginalPrice,
+		IsHot:                      input.IsHot,
+		GroupBuyTargetCount:        input.GroupBuyTargetCount,
+		GroupBuyPrice:              input.GroupBuyPrice,
+		GroupBuyAllowRepeat:        normalizeGroupBuyAllowRepeat(input.GroupBuyAllowRepeat),
 		GroupBuyMaxConcurrentTeams: input.GroupBuyMaxConcurrentTeams,
-		DealExpireDays:      normalizeExpireDays(input.DealExpireDays),
-		GroupExpireDays:     normalizeExpireDays(input.GroupExpireDays),
-		EnableCoupon:        normalizeEnableCoupon(input.EnableCoupon),
-		AllowPickup:         normalizeAllowPickup(input.AllowPickup),
-		ItemType:            input.ItemType,
-		Status:              input.Status,
+		DealExpireDays:             normalizeExpireDays(input.DealExpireDays),
+		GroupExpireDays:            normalizeExpireDays(input.GroupExpireDays),
+		EnableCoupon:               normalizeEnableCoupon(input.EnableCoupon),
+		AllowPickup:                normalizeAllowPickup(input.AllowPickup),
+		ItemType:                   input.ItemType,
+		Status:                     input.Status,
 	}
 	applyProductChannels(&product, input, nil, true)
 	if err := validateProductChannels(&product); err != nil {
@@ -326,25 +326,25 @@ func (s *ProductService) Update(id uint64, input ProductInput, scopeMerchantID *
 	}
 
 	updates := map[string]interface{}{
-		"merchant_id":            merchantID,
-		"category_id":            categoryID,
-		"name":                   input.Name,
-		"description":            input.Description,
-		"cover_url":              cover,
-		"images":                 toJSONColumn(images),
-		"price":                  input.Price,
-		"original_price":         input.OriginalPrice,
-		"is_hot":                 input.IsHot,
-		"group_buy_target_count": input.GroupBuyTargetCount,
-		"group_buy_price":        input.GroupBuyPrice,
-		"group_buy_allow_repeat": normalizeGroupBuyAllowRepeat(input.GroupBuyAllowRepeat),
+		"merchant_id":                    merchantID,
+		"category_id":                    categoryID,
+		"name":                           input.Name,
+		"description":                    input.Description,
+		"cover_url":                      cover,
+		"images":                         toJSONColumn(images),
+		"price":                          input.Price,
+		"original_price":                 input.OriginalPrice,
+		"is_hot":                         input.IsHot,
+		"group_buy_target_count":         input.GroupBuyTargetCount,
+		"group_buy_price":                input.GroupBuyPrice,
+		"group_buy_allow_repeat":         normalizeGroupBuyAllowRepeat(input.GroupBuyAllowRepeat),
 		"group_buy_max_concurrent_teams": input.GroupBuyMaxConcurrentTeams,
-		"deal_expire_days":       normalizeExpireDays(input.DealExpireDays),
-		"group_expire_days":      normalizeExpireDays(input.GroupExpireDays),
-		"enable_coupon":          normalizeEnableCoupon(input.EnableCoupon),
-		"allow_pickup":           normalizeAllowPickup(input.AllowPickup),
-		"item_type":              input.ItemType,
-		"status":                 input.Status,
+		"deal_expire_days":               normalizeExpireDays(input.DealExpireDays),
+		"group_expire_days":              normalizeExpireDays(input.GroupExpireDays),
+		"enable_coupon":                  normalizeEnableCoupon(input.EnableCoupon),
+		"allow_pickup":                   normalizeAllowPickup(input.AllowPickup),
+		"item_type":                      input.ItemType,
+		"status":                         input.Status,
 	}
 	updated := *product
 	updated.MerchantID = merchantID
@@ -498,6 +498,9 @@ func (s *ProductService) Delete(id uint64, scopeMerchantID *uint64) error {
 	if err := s.assertOwnerScope(product, scopeMerchantID); err != nil {
 		return err
 	}
+	if err := assertProductDeletable(s.DB, id); err != nil {
+		return err
+	}
 	return s.DB.Transaction(func(tx *gorm.DB) error {
 		if product.ItemType == model.ProductItemTypePackage {
 			var groups []model.ProductPackageGroup
@@ -577,11 +580,11 @@ func (s *ProductService) UpdateGroupBuy(id uint64, input GroupBuyConfigInput, sc
 		}
 	}
 	check := ProductInput{
-		Price:               product.Price,
-		EnableGroupBuy:      input.EnableGroupBuy,
-		GroupBuyTargetCount: targetCount,
-		GroupBuyPrice:       groupPrice,
-		GroupBuyAllowRepeat: allowRepeat,
+		Price:                      product.Price,
+		EnableGroupBuy:             input.EnableGroupBuy,
+		GroupBuyTargetCount:        targetCount,
+		GroupBuyPrice:              groupPrice,
+		GroupBuyAllowRepeat:        allowRepeat,
 		GroupBuyMaxConcurrentTeams: maxTeams,
 	}
 	if err := validateGroupBuyConfig(check); err != nil {
@@ -647,13 +650,13 @@ func (s *ProductService) UpdateCoupon(id uint64, enableCoupon uint8, scopeMercha
 }
 
 type UpdateProductSaleInput struct {
-	EnableGroupBuy      *uint8
-	EnableCoupon        *uint8
-	GroupBuyTargetCount *uint32
-	GroupBuyPrice       *float64
-	GroupBuyAllowRepeat *uint8
+	EnableGroupBuy             *uint8
+	EnableCoupon               *uint8
+	GroupBuyTargetCount        *uint32
+	GroupBuyPrice              *float64
+	GroupBuyAllowRepeat        *uint8
 	GroupBuyMaxConcurrentTeams *uint32
-	ForceCloseGroup     bool
+	ForceCloseGroup            bool
 }
 
 // UpdateSaleOptions 一次性更新拼团与优惠券配置（商品编辑页）。
@@ -694,12 +697,12 @@ func (s *ProductService) UpdateSaleOptions(id uint64, input UpdateProductSaleInp
 			maxTeams = &v
 		}
 		if _, err := s.UpdateGroupBuy(id, GroupBuyConfigInput{
-			EnableGroupBuy:      enable,
-			GroupBuyTargetCount: target,
-			GroupBuyPrice:       price,
-			GroupBuyAllowRepeat: allowRepeat,
+			EnableGroupBuy:             enable,
+			GroupBuyTargetCount:        target,
+			GroupBuyPrice:              price,
+			GroupBuyAllowRepeat:        allowRepeat,
 			GroupBuyMaxConcurrentTeams: maxTeams,
-			ForceCloseGroup:     input.ForceCloseGroup,
+			ForceCloseGroup:            input.ForceCloseGroup,
 		}, scopeMerchantID); err != nil {
 			return nil, err
 		}

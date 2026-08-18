@@ -19,6 +19,9 @@ type Activity struct {
 	EndAt        time.Time `gorm:"not null" json:"end_at"`
 	Status       uint8     `gorm:"not null;default:2" json:"status"`
 	EnableCoupon uint8     `gorm:"not null;default:1" json:"enable_coupon"`
+	UserMaxQty   uint32    `gorm:"not null;default:0" json:"user_max_qty"` // 活动内每人最多购买件数（跨商品累计），0=不限
+	UserDailyMax uint32    `gorm:"not null;default:0" json:"user_daily_max"` // 活动内每人每天最多购买件数，0=不限
+	UserDailyRefreshTime string `gorm:"type:time;not null;default:00:00:00" json:"user_daily_refresh_time"` // 活动每人每天限购刷新时刻
 	SortOrder    int       `gorm:"not null;default:0" json:"sort_order"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`

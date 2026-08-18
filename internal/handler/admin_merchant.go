@@ -21,14 +21,14 @@ type AdminHandler struct {
 }
 
 type CreateMerchantRequest struct {
-	Phone        string  `json:"phone" example:"13800138000"`
-	OpenID       string  `json:"openid" example:"oABC123"`
+	Phone        string   `json:"phone" example:"13800138000"`
+	OpenID       string   `json:"openid" example:"oABC123"`
 	ShopName     string   `json:"shop_name" binding:"required" example:"豫记小店"`
 	ShopLogo     *string  `json:"shop_logo"`
 	Images       []string `json:"images" example:"/uploads/2026/06/30/a.jpg,/uploads/2026/06/30/b.jpg"`
 	ContactPhone *string  `json:"contact_phone"`
-	Address      *string `json:"address"`
-	Nickname     *string `json:"nickname"`
+	Address      *string  `json:"address"`
+	Nickname     *string  `json:"nickname"`
 }
 
 type UpdateMerchantStatusRequest struct {
@@ -42,21 +42,21 @@ type UpdateMerchantImagesRequest struct {
 
 // UpdateMerchantProfileRequest 选择性更新商家资料。
 type UpdateMerchantProfileRequest struct {
-	ShopName         *string   `json:"shop_name" example:"豫记小店"`
-	ContactPhone     *string   `json:"contact_phone" example:"13800138000"`
-	Address          *string   `json:"address" example:"河南省郑州市"`
-	ShopLogo         *string   `json:"shop_logo"`
-	Images           *[]string `json:"images"`
+	ShopName         *string             `json:"shop_name" example:"豫记小店"`
+	ContactPhone     *string             `json:"contact_phone" example:"13800138000"`
+	Address          *string             `json:"address" example:"河南省郑州市"`
+	ShopLogo         *string             `json:"shop_logo"`
+	Images           *[]string           `json:"images"`
 	Latitude         FlexNullableFloat64 `json:"latitude"`
 	Longitude        FlexNullableFloat64 `json:"longitude"`
 	Lat              FlexNullableFloat64 `json:"lat"`
 	Lng              FlexNullableFloat64 `json:"lng"`
-	AllowReservation *uint8    `json:"allow_reservation" example:"1"`
-	AutoApprove      *uint8    `json:"auto_approve" example:"1"`
-	OpenTime         *string   `json:"open_time" example:"09:00"`
-	CloseTime        *string   `json:"close_time" example:"22:00"`
-	DeliveryFee      *float64  `json:"delivery_fee" example:"5.00"`
-	RiderEarnings    *float64  `json:"rider_earnings" example:"4.00"`
+	AllowReservation *uint8              `json:"allow_reservation" example:"1"`
+	AutoApprove      *uint8              `json:"auto_approve" example:"1"`
+	OpenTime         *string             `json:"open_time" example:"09:00"`
+	CloseTime        *string             `json:"close_time" example:"22:00"`
+	DeliveryFee      *float64            `json:"delivery_fee" example:"5.00"`
+	RiderEarnings    *float64            `json:"rider_earnings" example:"4.00"`
 }
 
 func (r UpdateMerchantProfileRequest) hasField() bool {
@@ -68,75 +68,75 @@ func (r UpdateMerchantProfileRequest) hasField() bool {
 }
 
 type ProductRequest struct {
-	MerchantID     uint64   `json:"merchant_id" example:"1"`
-	CategoryID     uint64   `json:"category_id" example:"1"`
-	CategoryName   *string  `json:"category_name" example:"特产"`
-	Name           string   `json:"name" binding:"required" example:"信阳毛尖"`
-	Description    *string  `json:"description"`
-	CoverURL       string   `json:"cover_url" example:"/uploads/2026/06/30/abc.jpg"`
-	Images         []string `json:"images" example:"/uploads/2026/06/30/a.jpg,/uploads/2026/06/30/b.jpg"`
-	Price          float64  `json:"price" binding:"required" example:"99.9"`
-	OriginalPrice  *float64 `json:"original_price" example:"129.9"`
-	Stock          uint32   `json:"stock" example:"100"`
-	EnableDeal          *uint8   `json:"enable_deal" example:"1"`
-	EnableGroup         *uint8   `json:"enable_group" example:"0"`
-	EnableTakeout       *uint8   `json:"enable_takeout" example:"0"`
-	DealStock           *uint32  `json:"deal_stock" example:"100"`
-	GroupStock          *uint32  `json:"group_stock" example:"50"`
-	TakeoutStock        *uint32  `json:"takeout_stock" example:"50"`
-	IsHot               uint8    `json:"is_hot" example:"0"`
-	EnableGroupBuy      *uint8   `json:"enable_group_buy" example:"0"`
-	EnableCoupon        *uint8   `json:"enable_coupon" example:"1"`
-	AllowPickup         *uint8   `json:"allow_pickup" example:"1"`
-	AllowDelivery       *uint8   `json:"allow_delivery" example:"1"`
-	GroupBuyTargetCount *uint32  `json:"group_buy_target_count" example:"3"`
-	GroupBuyPrice       *float64 `json:"group_buy_price" example:"79.9"`
-	GroupBuyAllowRepeat *uint8   `json:"group_buy_allow_repeat" example:"0"`
-	GroupBuyMaxConcurrentTeams *uint32 `json:"group_buy_max_concurrent_teams" example:"0"`
-	DealExpireDays      *uint32  `json:"deal_expire_days" example:"7"`
-	GroupExpireDays     *uint32  `json:"group_expire_days" example:"7"`
-	ItemType            uint8    `json:"item_type" example:"1"`
-	Status         uint8    `json:"status" example:"0"`
-	PackageGroups  []service.PackageGroupInput `json:"package_groups"`
-	OptionGroups   []service.OptionGroupInput  `json:"option_groups"`
-	ApplicableMerchantIDs *[]uint64 `json:"applicable_merchant_ids"`
+	MerchantID                 uint64                      `json:"merchant_id" example:"1"`
+	CategoryID                 uint64                      `json:"category_id" example:"1"`
+	CategoryName               *string                     `json:"category_name" example:"特产"`
+	Name                       string                      `json:"name" binding:"required" example:"信阳毛尖"`
+	Description                *string                     `json:"description"`
+	CoverURL                   string                      `json:"cover_url" example:"/uploads/2026/06/30/abc.jpg"`
+	Images                     []string                    `json:"images" example:"/uploads/2026/06/30/a.jpg,/uploads/2026/06/30/b.jpg"`
+	Price                      float64                     `json:"price" binding:"required" example:"99.9"`
+	OriginalPrice              *float64                    `json:"original_price" example:"129.9"`
+	Stock                      uint32                      `json:"stock" example:"100"`
+	EnableDeal                 *uint8                      `json:"enable_deal" example:"1"`
+	EnableGroup                *uint8                      `json:"enable_group" example:"0"`
+	EnableTakeout              *uint8                      `json:"enable_takeout" example:"0"`
+	DealStock                  *uint32                     `json:"deal_stock" example:"100"`
+	GroupStock                 *uint32                     `json:"group_stock" example:"50"`
+	TakeoutStock               *uint32                     `json:"takeout_stock" example:"50"`
+	IsHot                      uint8                       `json:"is_hot" example:"0"`
+	EnableGroupBuy             *uint8                      `json:"enable_group_buy" example:"0"`
+	EnableCoupon               *uint8                      `json:"enable_coupon" example:"1"`
+	AllowPickup                *uint8                      `json:"allow_pickup" example:"1"`
+	AllowDelivery              *uint8                      `json:"allow_delivery" example:"1"`
+	GroupBuyTargetCount        *uint32                     `json:"group_buy_target_count" example:"3"`
+	GroupBuyPrice              *float64                    `json:"group_buy_price" example:"79.9"`
+	GroupBuyAllowRepeat        *uint8                      `json:"group_buy_allow_repeat" example:"0"`
+	GroupBuyMaxConcurrentTeams *uint32                     `json:"group_buy_max_concurrent_teams" example:"0"`
+	DealExpireDays             *uint32                     `json:"deal_expire_days" example:"7"`
+	GroupExpireDays            *uint32                     `json:"group_expire_days" example:"7"`
+	ItemType                   uint8                       `json:"item_type" example:"1"`
+	Status                     uint8                       `json:"status" example:"0"`
+	PackageGroups              []service.PackageGroupInput `json:"package_groups"`
+	OptionGroups               []service.OptionGroupInput  `json:"option_groups"`
+	ApplicableMerchantIDs      *[]uint64                   `json:"applicable_merchant_ids"`
 }
 
 // UpdateProductRequest 选择性更新商品：只传需要修改的字段，未传字段保留原值。
 type UpdateProductRequest struct {
-	MerchantID          *uint64   `json:"merchant_id"`
-	CategoryID          *uint64   `json:"category_id"`
-	CategoryName        *string   `json:"category_name"`
-	Name                *string   `json:"name"`
-	Description         *string   `json:"description"`
-	CoverURL            *string   `json:"cover_url"`
-	Images              *[]string `json:"images"`
-	Price               *float64  `json:"price"`
-	OriginalPrice       *float64  `json:"original_price"`
-	Stock               *uint32   `json:"stock"`
-	EnableDeal          *uint8    `json:"enable_deal"`
-	EnableGroup         *uint8    `json:"enable_group"`
-	EnableTakeout       *uint8    `json:"enable_takeout"`
-	DealStock           *uint32   `json:"deal_stock"`
-	GroupStock          *uint32   `json:"group_stock"`
-	TakeoutStock        *uint32   `json:"takeout_stock"`
-	IsHot               *uint8    `json:"is_hot"`
-	EnableGroupBuy      *uint8    `json:"enable_group_buy"`
-	EnableCoupon        *uint8    `json:"enable_coupon"`
-	AllowPickup         *uint8    `json:"allow_pickup"`
-	AllowDelivery       *uint8    `json:"allow_delivery"`
-	GroupBuyTargetCount *uint32   `json:"group_buy_target_count"`
-	GroupBuyPrice       *float64  `json:"group_buy_price"`
-	GroupBuyAllowRepeat *uint8    `json:"group_buy_allow_repeat"`
-	GroupBuyMaxConcurrentTeams *uint32 `json:"group_buy_max_concurrent_teams"`
-	DealExpireDays      *uint32   `json:"deal_expire_days"`
-	GroupExpireDays     *uint32   `json:"group_expire_days"`
-	ItemType            *uint8    `json:"item_type"`
-	Status              *uint8    `json:"status"`
-	PackageGroups       []service.PackageGroupInput  `json:"package_groups"`
-	OptionGroups        *[]service.OptionGroupInput  `json:"option_groups"`
-	ApplicableMerchantIDs *[]uint64 `json:"applicable_merchant_ids"`
-	ForceCloseGroup     *uint8    `json:"force_close_group"` // 1=确认关闭拼团并退款待成团
+	MerchantID                 *uint64                     `json:"merchant_id"`
+	CategoryID                 *uint64                     `json:"category_id"`
+	CategoryName               *string                     `json:"category_name"`
+	Name                       *string                     `json:"name"`
+	Description                *string                     `json:"description"`
+	CoverURL                   *string                     `json:"cover_url"`
+	Images                     *[]string                   `json:"images"`
+	Price                      *float64                    `json:"price"`
+	OriginalPrice              *float64                    `json:"original_price"`
+	Stock                      *uint32                     `json:"stock"`
+	EnableDeal                 *uint8                      `json:"enable_deal"`
+	EnableGroup                *uint8                      `json:"enable_group"`
+	EnableTakeout              *uint8                      `json:"enable_takeout"`
+	DealStock                  *uint32                     `json:"deal_stock"`
+	GroupStock                 *uint32                     `json:"group_stock"`
+	TakeoutStock               *uint32                     `json:"takeout_stock"`
+	IsHot                      *uint8                      `json:"is_hot"`
+	EnableGroupBuy             *uint8                      `json:"enable_group_buy"`
+	EnableCoupon               *uint8                      `json:"enable_coupon"`
+	AllowPickup                *uint8                      `json:"allow_pickup"`
+	AllowDelivery              *uint8                      `json:"allow_delivery"`
+	GroupBuyTargetCount        *uint32                     `json:"group_buy_target_count"`
+	GroupBuyPrice              *float64                    `json:"group_buy_price"`
+	GroupBuyAllowRepeat        *uint8                      `json:"group_buy_allow_repeat"`
+	GroupBuyMaxConcurrentTeams *uint32                     `json:"group_buy_max_concurrent_teams"`
+	DealExpireDays             *uint32                     `json:"deal_expire_days"`
+	GroupExpireDays            *uint32                     `json:"group_expire_days"`
+	ItemType                   *uint8                      `json:"item_type"`
+	Status                     *uint8                      `json:"status"`
+	PackageGroups              []service.PackageGroupInput `json:"package_groups"`
+	OptionGroups               *[]service.OptionGroupInput `json:"option_groups"`
+	ApplicableMerchantIDs      *[]uint64                   `json:"applicable_merchant_ids"`
+	ForceCloseGroup            *uint8                      `json:"force_close_group"` // 1=确认关闭拼团并退款待成团
 }
 
 func (r UpdateProductRequest) hasField() bool {
@@ -171,12 +171,12 @@ type UpdateProductStockRequest struct {
 }
 
 type UpdateProductGroupBuyRequest struct {
-	EnableGroupBuy      uint8    `json:"enable_group_buy" binding:"required" example:"1"`
-	GroupBuyTargetCount *uint32  `json:"group_buy_target_count" example:"3"`
-	GroupBuyPrice       *float64 `json:"group_buy_price" example:"79.9"`
-	GroupBuyAllowRepeat *uint8   `json:"group_buy_allow_repeat" example:"0"`
-	GroupBuyMaxConcurrentTeams *uint32 `json:"group_buy_max_concurrent_teams" example:"0"`
-	ForceCloseGroup     *uint8   `json:"force_close_group"`
+	EnableGroupBuy             uint8    `json:"enable_group_buy" binding:"required" example:"1"`
+	GroupBuyTargetCount        *uint32  `json:"group_buy_target_count" example:"3"`
+	GroupBuyPrice              *float64 `json:"group_buy_price" example:"79.9"`
+	GroupBuyAllowRepeat        *uint8   `json:"group_buy_allow_repeat" example:"0"`
+	GroupBuyMaxConcurrentTeams *uint32  `json:"group_buy_max_concurrent_teams" example:"0"`
+	ForceCloseGroup            *uint8   `json:"force_close_group"`
 }
 
 type UpdateProductCouponRequest struct {
@@ -185,13 +185,13 @@ type UpdateProductCouponRequest struct {
 
 // UpdateProductSaleRequest 商品销售方式（拼团 + 优惠券）一次性保存，供编辑页使用。
 type UpdateProductSaleRequest struct {
-	EnableGroupBuy      *uint8   `json:"enable_group_buy" example:"1"`
-	EnableCoupon        *uint8   `json:"enable_coupon" example:"1"`
-	GroupBuyTargetCount *uint32  `json:"group_buy_target_count" example:"3"`
-	GroupBuyPrice       *float64 `json:"group_buy_price" example:"79.9"`
-	GroupBuyAllowRepeat *uint8   `json:"group_buy_allow_repeat" example:"0"`
-	GroupBuyMaxConcurrentTeams *uint32 `json:"group_buy_max_concurrent_teams" example:"0"`
-	ForceCloseGroup     *uint8   `json:"force_close_group"`
+	EnableGroupBuy             *uint8   `json:"enable_group_buy" example:"1"`
+	EnableCoupon               *uint8   `json:"enable_coupon" example:"1"`
+	GroupBuyTargetCount        *uint32  `json:"group_buy_target_count" example:"3"`
+	GroupBuyPrice              *float64 `json:"group_buy_price" example:"79.9"`
+	GroupBuyAllowRepeat        *uint8   `json:"group_buy_allow_repeat" example:"0"`
+	GroupBuyMaxConcurrentTeams *uint32  `json:"group_buy_max_concurrent_teams" example:"0"`
+	ForceCloseGroup            *uint8   `json:"force_close_group"`
 }
 
 // CreateMerchant godoc
@@ -812,12 +812,12 @@ func (h *AdminHandler) patchProductGroupBuy(c *gin.Context, scope *uint64) {
 		return
 	}
 	product, err := h.ProductSvc.UpdateGroupBuy(id, service.GroupBuyConfigInput{
-		EnableGroupBuy:      req.EnableGroupBuy,
-		GroupBuyTargetCount: req.GroupBuyTargetCount,
-		GroupBuyPrice:       req.GroupBuyPrice,
-		GroupBuyAllowRepeat: req.GroupBuyAllowRepeat,
+		EnableGroupBuy:             req.EnableGroupBuy,
+		GroupBuyTargetCount:        req.GroupBuyTargetCount,
+		GroupBuyPrice:              req.GroupBuyPrice,
+		GroupBuyAllowRepeat:        req.GroupBuyAllowRepeat,
 		GroupBuyMaxConcurrentTeams: req.GroupBuyMaxConcurrentTeams,
-		ForceCloseGroup:     req.ForceCloseGroup != nil && *req.ForceCloseGroup == 1,
+		ForceCloseGroup:            req.ForceCloseGroup != nil && *req.ForceCloseGroup == 1,
 	}, scope)
 	if err != nil {
 		h.handleProductError(c, err)
@@ -863,13 +863,13 @@ func (h *AdminHandler) patchProductSale(c *gin.Context, scope *uint64) {
 		return
 	}
 	product, err := h.ProductSvc.UpdateSaleOptions(id, service.UpdateProductSaleInput{
-		EnableGroupBuy:      req.EnableGroupBuy,
-		EnableCoupon:        req.EnableCoupon,
-		GroupBuyTargetCount: req.GroupBuyTargetCount,
-		GroupBuyPrice:       req.GroupBuyPrice,
-		GroupBuyAllowRepeat: req.GroupBuyAllowRepeat,
+		EnableGroupBuy:             req.EnableGroupBuy,
+		EnableCoupon:               req.EnableCoupon,
+		GroupBuyTargetCount:        req.GroupBuyTargetCount,
+		GroupBuyPrice:              req.GroupBuyPrice,
+		GroupBuyAllowRepeat:        req.GroupBuyAllowRepeat,
 		GroupBuyMaxConcurrentTeams: req.GroupBuyMaxConcurrentTeams,
-		ForceCloseGroup:     req.ForceCloseGroup != nil && *req.ForceCloseGroup == 1,
+		ForceCloseGroup:            req.ForceCloseGroup != nil && *req.ForceCloseGroup == 1,
 	}, scope)
 	if err != nil {
 		h.handleProductError(c, err)
@@ -922,6 +922,14 @@ func (h *AdminHandler) handleMerchantError(c *gin.Context, err error) {
 
 func (h *AdminHandler) handleProductError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, service.ErrCatalogInUse):
+		msg := service.CatalogInUseMessage(err)
+		data := gin.H{"reason": "catalog_in_use"}
+		var inUse *service.CatalogInUseError
+		if errors.As(err, &inUse) && inUse != nil {
+			data["reason"] = inUse.Reason
+		}
+		response.FailWithData(c, 409, 40910, msg, data)
 	case errors.Is(err, service.ErrGroupCloseNeedsConfirm):
 		msg := "仍有进行中的拼团订单，关闭通道将退款并解散这些团"
 		data := gin.H{"reason": "group_close_needs_confirm"}
@@ -1488,9 +1496,9 @@ func (h *MerchantHandler) handleProductError(c *gin.Context, err error) {
 
 func buildProductInput(req ProductRequest, existing *model.Product) service.ProductInput {
 	input := service.ProductInput{
-		MerchantID:  req.MerchantID,
-		CategoryID:  req.CategoryID,
-		Name:        req.Name,
+		MerchantID:    req.MerchantID,
+		CategoryID:    req.CategoryID,
+		Name:          req.Name,
 		Description:   req.Description,
 		CoverURL:      req.CoverURL,
 		Images:        req.Images,
@@ -1601,34 +1609,34 @@ func buildProductInput(req ProductRequest, existing *model.Product) service.Prod
 
 func buildPatchProductInput(req UpdateProductRequest, existing *model.Product) service.ProductInput {
 	input := service.ProductInput{
-		MerchantID:          existing.MerchantID,
-		CategoryID:          existing.CategoryID,
-		Name:                existing.Name,
-		Description:         existing.Description,
-		CoverURL:            existing.CoverURL,
-		Images:              existing.Images,
-		Price:               existing.Price,
-		OriginalPrice:       existing.OriginalPrice,
-		Stock:               existing.Stock,
-		EnableDeal:          existing.EnableDeal,
-		EnableGroup:         existing.EnableGroup,
-		EnableTakeout:       existing.EnableTakeout,
-		DealStock:           existing.DealStock,
-		GroupStock:          existing.GroupStock,
-		TakeoutStock:        existing.TakeoutStock,
-		IsHot:               existing.IsHot,
-		EnableGroupBuy:      existing.EnableGroupBuy,
-		EnableCoupon:        existing.EnableCoupon,
-		AllowPickup:         existing.AllowPickup,
-		AllowDelivery:       existing.AllowDelivery,
-		GroupBuyTargetCount: existing.GroupBuyTargetCount,
-		GroupBuyPrice:       existing.GroupBuyPrice,
-		GroupBuyAllowRepeat: existing.GroupBuyAllowRepeat,
+		MerchantID:                 existing.MerchantID,
+		CategoryID:                 existing.CategoryID,
+		Name:                       existing.Name,
+		Description:                existing.Description,
+		CoverURL:                   existing.CoverURL,
+		Images:                     existing.Images,
+		Price:                      existing.Price,
+		OriginalPrice:              existing.OriginalPrice,
+		Stock:                      existing.Stock,
+		EnableDeal:                 existing.EnableDeal,
+		EnableGroup:                existing.EnableGroup,
+		EnableTakeout:              existing.EnableTakeout,
+		DealStock:                  existing.DealStock,
+		GroupStock:                 existing.GroupStock,
+		TakeoutStock:               existing.TakeoutStock,
+		IsHot:                      existing.IsHot,
+		EnableGroupBuy:             existing.EnableGroupBuy,
+		EnableCoupon:               existing.EnableCoupon,
+		AllowPickup:                existing.AllowPickup,
+		AllowDelivery:              existing.AllowDelivery,
+		GroupBuyTargetCount:        existing.GroupBuyTargetCount,
+		GroupBuyPrice:              existing.GroupBuyPrice,
+		GroupBuyAllowRepeat:        existing.GroupBuyAllowRepeat,
 		GroupBuyMaxConcurrentTeams: existing.GroupBuyMaxConcurrentTeams,
-		DealExpireDays:      existing.DealExpireDays,
-		GroupExpireDays:     existing.GroupExpireDays,
-		ItemType:            existing.ItemType,
-		Status:              existing.Status,
+		DealExpireDays:             existing.DealExpireDays,
+		GroupExpireDays:            existing.GroupExpireDays,
+		ItemType:                   existing.ItemType,
+		Status:                     existing.Status,
 	}
 	if req.MerchantID != nil {
 		input.MerchantID = *req.MerchantID

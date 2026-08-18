@@ -15,6 +15,8 @@ type SeckillProductView struct {
 	ActivityID     uint64    `json:"activity_id"`
 	MerchantID     uint64    `json:"merchant_id"`
 	ProductID      uint64    `json:"product_id"`
+	EnableGroupBuy uint8     `json:"enable_group_buy"`
+	Channel        string    `json:"channel"`
 	ProductName    string    `json:"product_name"`
 	ProductCover   string    `json:"product_cover"`
 	ActivityPrice  float64   `json:"activity_price"`
@@ -128,14 +130,24 @@ func buildSeckillProductView(act *model.Activity, ap *model.ActivityProduct, p *
 	if p.CoverURL != "" {
 		cover = p.CoverURL
 	}
+	channel := "deal"
+	price := ap.ActivityPrice
+	if activityProductCanGroupBuy(ap) {
+		channel = "group"
+		if ap.GroupBuyPrice != nil && *ap.GroupBuyPrice > 0 {
+			price = *ap.GroupBuyPrice
+		}
+	}
 	return SeckillProductView{
 		ID:             ap.ID,
 		ActivityID:     ap.ActivityID,
 		MerchantID:     p.MerchantID,
 		ProductID:      ap.ProductID,
+		EnableGroupBuy: ap.EnableGroupBuy,
+		Channel:        channel,
 		ProductName:    p.Name,
 		ProductCover:   cover,
-		ActivityPrice:  ap.ActivityPrice,
+		ActivityPrice:  price,
 		OriginalPrice:  p.Price,
 		ActivityStock:  ap.ActivityStock,
 		SoldCount:      ap.SoldCount,
@@ -143,12 +155,18 @@ func buildSeckillProductView(act *model.Activity, ap *model.ActivityProduct, p *
 		StockProgress:  progress,
 		StartAt:        act.StartAt,
 		EndAt:          act.EndAt,
-		LimitLabels:    buildSeckillLimitLabels(ap),
+		LimitLabels:    buildSeckillLimitLabels(ap, act.UserMaxQty, act.UserDailyMax),
 	}
 }
 
-func buildSeckillLimitLabels(ap *model.ActivityProduct) []string {
-	labels := make([]string, 0, 6)
+func buildSeckillLimitLabels(ap *model.ActivityProduct, userMaxQty, userDailyMax uint32) []string {
+	labels := make([]string, 0, 8)
+	if userMaxQty > 0 {
+		labels = append(labels, fmt.Sprintf("活动内限购%d件", userMaxQty))
+	}
+	if userDailyMax > 0 {
+		labels = append(labels, fmt.Sprintf("活动每天限购%d件", userDailyMax))
+	}
 	if ap.RegisterHours > 0 {
 		labels = append(labels, fmt.Sprintf("新用户%d小时内", ap.RegisterHours))
 		if ap.RegisterMax > 0 {
@@ -191,7 +209,8 @@ func seckillButtonState(limitReached bool, available uint32) string {
 }
 
 // seckillDeadlineAt 取该商品当前最短到期：活动结束 ∪ 已启用日/周/月窗结束 ∪
-// 平台日限窗结束（当 PlatformDailyMax>0）∪（登录且启用时）新用户窗截止。
+// 平台日限窗结束（当 PlatformDailyMax>0）∪ 活动每人每天限购窗结束（当 UserDailyMax>0，
+// 使用活动自己的 UserDailyRefreshTime）∪（登录且启用时）新用户窗截止。
 // 各窗口均通过 calendarWindowFor + limitRefreshFromProduct 使用商品真实的
 // 每维刷新时间，而非午夜或 DailyRefreshTime 一刀切。
 func seckillDeadlineAt(act *model.Activity, ap *model.ActivityProduct, accountCreatedAt time.Time, loggedIn bool, now time.Time) time.Time {
@@ -219,6 +238,11 @@ func seckillDeadlineAt(act *model.Activity, ap *model.ActivityProduct, accountCr
 	}
 	if ap.PlatformDailyMax > 0 {
 		_, end := calendarWindowFor(now, "day", cfg)
+		consider(end)
+	}
+	if act.UserDailyMax > 0 {
+		dayCfg := limitRefreshConfig{DailyTime: act.UserDailyRefreshTime}
+		_, end := calendarWindowFor(now, "day", dayCfg)
 		consider(end)
 	}
 	if loggedIn && ap.RegisterHours > 0 {

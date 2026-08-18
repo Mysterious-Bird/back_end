@@ -63,8 +63,9 @@ func TestAssertActivityGroupBuyOnly(t *testing.T) {
 		wantErr      bool
 	}{
 		{"group allowed", model.PurchaseTypeGroup, enabled, false},
-		{"solo rejected when group only", model.PurchaseTypeSolo, enabled, true},
-		{"solo ok when not group only", model.PurchaseTypeSolo, disabled, false},
+		{"solo blocked when group AP", model.PurchaseTypeSolo, enabled, true},
+		{"solo ok when not group", model.PurchaseTypeSolo, disabled, false},
+		{"group blocked when deal AP", model.PurchaseTypeGroup, disabled, true},
 		{"nil context ok", model.PurchaseTypeSolo, nil, false},
 	}
 
@@ -77,9 +78,6 @@ func TestAssertActivityGroupBuyOnly(t *testing.T) {
 				}
 				if !errors.Is(err, ErrGroupBuyInvalid) {
 					t.Fatalf("expected ErrGroupBuyInvalid, got %v", err)
-				}
-				if !strings.Contains(err.Error(), "该活动商品仅支持拼团购买") {
-					t.Fatalf("unexpected message: %v", err)
 				}
 				return
 			}

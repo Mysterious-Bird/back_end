@@ -85,22 +85,22 @@ type OrderView struct {
 }
 
 type GroupBuyProgress struct {
-	TeamID          uint64  `json:"team_id"`
-	TargetCount     uint32  `json:"target_count"`
-	CurrentCount    uint32  `json:"current_count"`
-	RemainingCount  uint32  `json:"remaining_count"`
-	Status          uint8   `json:"status"`
-	StatusText      string  `json:"status_text"`
-	ExpireAt        string  `json:"expire_at"`
-	GroupPrice      float64 `json:"group_price"`
-	AllowRepeatJoin uint8   `json:"allow_repeat_join"`
-	UserJoined      bool    `json:"user_joined"`
-	UserJoinCount   uint32  `json:"user_join_count"`
-	IsLeader        bool    `json:"is_leader"`
-	CanStartNewTeam bool    `json:"can_start_new_team"`
-	MaxConcurrentTeams uint32 `json:"max_concurrent_teams"`
-	ConcurrentTeamCount uint32 `json:"concurrent_team_count"`
-	Members         []GroupBuyMemberView `json:"members,omitempty"`
+	TeamID              uint64               `json:"team_id"`
+	TargetCount         uint32               `json:"target_count"`
+	CurrentCount        uint32               `json:"current_count"`
+	RemainingCount      uint32               `json:"remaining_count"`
+	Status              uint8                `json:"status"`
+	StatusText          string               `json:"status_text"`
+	ExpireAt            string               `json:"expire_at"`
+	GroupPrice          float64              `json:"group_price"`
+	AllowRepeatJoin     uint8                `json:"allow_repeat_join"`
+	UserJoined          bool                 `json:"user_joined"`
+	UserJoinCount       uint32               `json:"user_join_count"`
+	IsLeader            bool                 `json:"is_leader"`
+	CanStartNewTeam     bool                 `json:"can_start_new_team"`
+	MaxConcurrentTeams  uint32               `json:"max_concurrent_teams"`
+	ConcurrentTeamCount uint32               `json:"concurrent_team_count"`
+	Members             []GroupBuyMemberView `json:"members,omitempty"`
 }
 
 // GroupBuyMemberView 拼团页成员展示（昵称/头像）。
@@ -284,7 +284,7 @@ func (s *OrderService) Create(accountID uint64, input CreateOrderInput) (*OrderV
 		gb = resolved
 		groupBuyID = &gb.ID
 		if input.StartNewTeam {
-			if err := assertCanStartNewTeam(s.DB, product, gb, actGB, activityID); err != nil {
+			if err := assertCanStartNewTeam(s.DB, product, gb, actGB, activityID, activityProductID); err != nil {
 				return nil, err
 			}
 		}
@@ -342,11 +342,11 @@ func (s *OrderService) Create(accountID uint64, input CreateOrderInput) (*OrderV
 			DeliveryType:        input.DeliveryType,
 			AddressSnapshot:     addrSnap,
 			TotalAmount:         subtotal,
-		DiscountAmount:      discountAmount,
-		UserCouponID:        input.UserCouponID,
-		PayAmount:           payAmount,
-		PayStatus:           model.PayStatusUnpaid,
-		PayExpireAt:         payExpireAt,
+			DiscountAmount:      discountAmount,
+			UserCouponID:        input.UserCouponID,
+			PayAmount:           payAmount,
+			PayStatus:           model.PayStatusUnpaid,
+			PayExpireAt:         payExpireAt,
 			Remark:              input.Remark,
 		}
 		if err := tx.Create(&order).Error; err != nil {
@@ -495,6 +495,9 @@ func (s *OrderService) joinOrCreateTeam(tx *gorm.DB, accountID, orderID uint64, 
 		if err != nil {
 			return 0, err
 		}
+		if err := assertTeamMatchesActivityProduct(tx, team.ID, activityProductID); err != nil {
+			return 0, err
+		}
 		allowRepeat, maxJoins := resolveGroupBuyRepeat(product, actGB)
 		if err := validateTeamJoinLimit(joinCount, allowRepeat, maxJoins); err != nil {
 			return 0, err
@@ -524,7 +527,7 @@ func (s *OrderService) joinOrCreateTeam(tx *gorm.DB, accountID, orderID uint64, 
 	}
 	expire := computeGroupExpireAt(now, ap)
 
-	if err := assertCanStartNewTeam(tx, product, gb, actGB, activityID); err != nil {
+	if err := assertCanStartNewTeam(tx, product, gb, actGB, activityID, activityProductID); err != nil {
 		return 0, err
 	}
 
@@ -778,11 +781,11 @@ func (s *OrderService) tryCompleteGroupForOrderInTx(tx *gorm.DB, orderID uint64)
 				price = *ap.GroupBuyPrice
 			}
 			actGB = &ActivityGroupBuyConfig{
-				EnableGroupBuy:          1,
-				GroupBuyPrice:           price,
-				GroupBuyTargetCount:     target,
-				GroupBuyAllowRepeat:     ap.GroupBuyAllowRepeat,
-				GroupBuyMaxJoinsPerUser: ap.GroupBuyMaxJoinsPerUser,
+				EnableGroupBuy:             1,
+				GroupBuyPrice:              price,
+				GroupBuyTargetCount:        target,
+				GroupBuyAllowRepeat:        ap.GroupBuyAllowRepeat,
+				GroupBuyMaxJoinsPerUser:    ap.GroupBuyMaxJoinsPerUser,
 				GroupBuyMaxConcurrentTeams: ap.GroupBuyMaxConcurrentTeams,
 			}
 		}
@@ -1380,40 +1383,36 @@ func (s *OrderService) GetActivityGroupProgress(accountID, activityID, activityP
 		groupPrice = *ap.GroupBuyPrice
 	}
 	actGB := &ActivityGroupBuyConfig{
-		EnableGroupBuy:          1,
-		GroupBuyPrice:           groupPrice,
-		GroupBuyTargetCount:     target,
-		GroupBuyAllowRepeat:     ap.GroupBuyAllowRepeat,
-		GroupBuyMaxJoinsPerUser: maxJoins,
+		EnableGroupBuy:             1,
+		GroupBuyPrice:              groupPrice,
+		GroupBuyTargetCount:        target,
+		GroupBuyAllowRepeat:        ap.GroupBuyAllowRepeat,
+		GroupBuyMaxJoinsPerUser:    maxJoins,
 		GroupBuyMaxConcurrentTeams: ap.GroupBuyMaxConcurrentTeams,
 	}
 
 	resolvedTeamID := teamID
 	if resolvedTeamID == nil && accountID > 0 {
-		if userTeamID, err := findUserPendingTeamInGroupBuy(s.DB, accountID, gb.ID, &activityID); err != nil {
+		if userTeamID, err := findUserPendingTeamInGroupBuy(s.DB, accountID, gb.ID, &activityID, &activityProductID); err != nil {
 			return nil, err
 		} else if userTeamID != nil {
 			resolvedTeamID = userTeamID
 		}
 	}
 	if resolvedTeamID == nil {
-		if latestTeamID, err := findLatestActivityPendingTeam(s.DB, gb.ID, activityID); err != nil {
+		if latestTeamID, err := findLatestActivityPendingTeam(s.DB, gb.ID, activityID, activityProductID); err != nil {
 			return nil, err
 		} else if latestTeamID != nil {
 			resolvedTeamID = latestTeamID
 		}
 	}
 
-	var team model.GroupBuyTeam
-	q := query.NotDeleted(s.DB).Where("group_buy_id = ?", gb.ID)
-	if resolvedTeamID != nil {
-		q = q.Where("id = ?", *resolvedTeamID)
-	} else {
-		q = q.Where("status = ?", model.GroupBuyTeamPending)
+	if resolvedTeamID == nil {
+		return s.buildEmptyGroupBuyProgress(&prod, &gb, actGB), nil
 	}
-	if err := q.Order("id DESC").First(&team).Error; err != nil {
-		// 同 GetGroupProgress：活动商品已启用拼团但暂无待成团 team，
-		// 返回未开团的空进度而非 400。
+
+	var team model.GroupBuyTeam
+	if err := query.NotDeleted(s.DB).Where("group_buy_id = ? AND id = ?", gb.ID, *resolvedTeamID).First(&team).Error; err != nil {
 		return s.buildEmptyGroupBuyProgress(&prod, &gb, actGB), nil
 	}
 
@@ -1514,7 +1513,8 @@ func (s *OrderService) ListJoinableTeams(productID uint64, activityID, activityP
 		q = q.
 			Joins("JOIN order_item oi ON oi.group_buy_team_id = t.id AND oi.is_deleted = ?", model.NotDeleted).
 			Joins("JOIN `order` o ON o.id = oi.order_id AND o.is_deleted = ?", model.NotDeleted).
-			Where("oi.activity_id = ? AND o.status = ?", *activityID, model.OrderStatusPendingGroup)
+			Where("o.status = ?", model.OrderStatusPendingGroup)
+		q = applyActivityTeamScope(q, activityID, activityProductID)
 	} else {
 		q = q.
 			Joins("JOIN order_item oi ON oi.group_buy_team_id = t.id AND oi.is_deleted = ?", model.NotDeleted).
@@ -1550,7 +1550,7 @@ func (s *OrderService) ListJoinableTeams(productID uint64, activityID, activityP
 		out = append(out, view)
 	}
 
-	canStart, maxTeams, concurrentCount, err := buildConcurrentTeamMeta(s.DB, product, gb, actGB, activityID)
+	canStart, maxTeams, concurrentCount, err := buildConcurrentTeamMeta(s.DB, product, gb, actGB, activityID, activityProductID)
 	if err != nil {
 		return nil, err
 	}
@@ -1602,11 +1602,11 @@ func (s *OrderService) attachGroupBuyProgress(view *OrderView, accountID uint64)
 			}
 			maxJoins := ap.GroupBuyMaxJoinsPerUser
 			actGB = &ActivityGroupBuyConfig{
-				EnableGroupBuy:          1,
-				GroupBuyPrice:           *ap.GroupBuyPrice,
-				GroupBuyTargetCount:     target,
-				GroupBuyAllowRepeat:     ap.GroupBuyAllowRepeat,
-				GroupBuyMaxJoinsPerUser: maxJoins,
+				EnableGroupBuy:             1,
+				GroupBuyPrice:              *ap.GroupBuyPrice,
+				GroupBuyTargetCount:        target,
+				GroupBuyAllowRepeat:        ap.GroupBuyAllowRepeat,
+				GroupBuyMaxJoinsPerUser:    maxJoins,
 				GroupBuyMaxConcurrentTeams: ap.GroupBuyMaxConcurrentTeams,
 			}
 		}
@@ -1898,18 +1898,17 @@ func loadGroupBuyMemberViews(db *gorm.DB, teamID, viewerAccountID uint64, avatar
 	return out, nil
 }
 
-func findLatestActivityPendingTeam(db *gorm.DB, groupBuyID, activityID uint64) (*uint64, error) {
+func findLatestActivityPendingTeam(db *gorm.DB, groupBuyID, activityID, activityProductID uint64) (*uint64, error) {
 	var teamID uint64
-	err := db.
+	q := db.
 		Table("group_buy_team t").
 		Select("t.id").
 		Joins("JOIN order_item oi ON oi.group_buy_team_id = t.id AND oi.is_deleted = ?", model.NotDeleted).
 		Joins("JOIN `order` o ON o.id = oi.order_id AND o.is_deleted = ?", model.NotDeleted).
 		Where("t.is_deleted = ? AND t.group_buy_id = ? AND t.status = ?", model.NotDeleted, groupBuyID, model.GroupBuyTeamPending).
-		Where("oi.activity_id = ? AND o.status = ?", activityID, model.OrderStatusPendingGroup).
-		Order("t.id DESC").
-		Limit(1).
-		Scan(&teamID).Error
+		Where("o.status = ?", model.OrderStatusPendingGroup)
+	q = applyActivityTeamScope(q, &activityID, &activityProductID)
+	err := q.Order("t.id DESC").Limit(1).Scan(&teamID).Error
 	if err != nil {
 		return nil, err
 	}
@@ -1919,7 +1918,7 @@ func findLatestActivityPendingTeam(db *gorm.DB, groupBuyID, activityID uint64) (
 	return &teamID, nil
 }
 
-func findUserPendingTeamInGroupBuy(tx *gorm.DB, accountID, groupBuyID uint64, activityID *uint64) (*uint64, error) {
+func findUserPendingTeamInGroupBuy(tx *gorm.DB, accountID, groupBuyID uint64, activityID, activityProductID *uint64) (*uint64, error) {
 	q := tx.
 		Table("order_item oi").
 		Select("oi.group_buy_team_id").
@@ -1927,11 +1926,7 @@ func findUserPendingTeamInGroupBuy(tx *gorm.DB, accountID, groupBuyID uint64, ac
 		Joins("JOIN group_buy_team t ON t.id = oi.group_buy_team_id AND t.is_deleted = ? AND t.status = ?", model.NotDeleted, model.GroupBuyTeamPending).
 		Where("o.account_id = ? AND oi.group_buy_id = ? AND oi.is_deleted = ?", accountID, groupBuyID, model.NotDeleted).
 		Where("o.status = ?", model.OrderStatusPendingGroup)
-	if activityID != nil {
-		q = q.Where("oi.activity_id = ?", *activityID)
-	} else {
-		q = q.Where("oi.activity_id IS NULL")
-	}
+	q = applyActivityTeamScope(q, activityID, activityProductID)
 	var teamID uint64
 	if err := q.Order("o.id DESC").Limit(1).Scan(&teamID).Error; err != nil {
 		return nil, err
@@ -1940,6 +1935,25 @@ func findUserPendingTeamInGroupBuy(tx *gorm.DB, accountID, groupBuyID uint64, ac
 		return nil, nil
 	}
 	return &teamID, nil
+}
+
+func assertTeamMatchesActivityProduct(tx *gorm.DB, teamID uint64, activityProductID *uint64) error {
+	if activityProductID == nil {
+		return nil
+	}
+	var apID uint64
+	err := tx.Table("order_item oi").
+		Select("oi.activity_product_id").
+		Where("oi.group_buy_team_id = ? AND oi.is_deleted = ? AND oi.activity_product_id IS NOT NULL", teamID, model.NotDeleted).
+		Limit(1).
+		Scan(&apID).Error
+	if err != nil {
+		return err
+	}
+	if apID == 0 || apID != *activityProductID {
+		return ErrGroupBuyInvalid
+	}
+	return nil
 }
 
 func countUserTeamOrders(db *gorm.DB, accountID, teamID uint64) (int64, error) {
@@ -2172,8 +2186,12 @@ func assertActivityGroupBuyOnly(purchaseType uint8, actCtx *ActivityOrderContext
 	if actCtx == nil || actCtx.ActivityProduct == nil {
 		return nil
 	}
-	if actCtx.ActivityProduct.EnableGroupBuy == 1 && purchaseType != model.PurchaseTypeGroup {
-		return fmt.Errorf("%w: 该活动商品仅支持拼团购买", ErrGroupBuyInvalid)
+	ap := actCtx.ActivityProduct
+	if ap.EnableGroupBuy == 1 && purchaseType != model.PurchaseTypeGroup {
+		return fmt.Errorf("%w: 该活动商品仅支持拼团", ErrGroupBuyInvalid)
+	}
+	if ap.EnableGroupBuy != 1 && purchaseType == model.PurchaseTypeGroup {
+		return fmt.Errorf("%w: 该活动商品不支持拼团", ErrGroupBuyInvalid)
 	}
 	return nil
 }

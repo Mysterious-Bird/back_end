@@ -291,6 +291,9 @@ CREATE TABLE IF NOT EXISTS `activity` (
   `end_at` DATETIME NOT NULL,
   `status` TINYINT UNSIGNED NOT NULL DEFAULT 2 COMMENT '0下架 1上架 2草稿',
   `enable_coupon` TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  `user_max_qty` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '活动内每人最多购买件数（跨商品累计），0=不限',
+  `user_daily_max` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '活动内每人每天最多购买件数（跨商品累计），0=不限',
+  `user_daily_refresh_time` TIME NOT NULL DEFAULT '00:00:00' COMMENT '活动每人每天限购刷新时刻',
   `sort_order` INT NOT NULL DEFAULT 0,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -339,6 +342,7 @@ CREATE TABLE IF NOT EXISTS `activity_product` (
   `is_deleted` TINYINT UNSIGNED NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`),
   KEY `idx_activity_product_activity` (`activity_id`),
+  -- 非唯一：同一活动允许同一 product_id 多条活动商品（不同价/通道）
   KEY `idx_activity_product_product` (`product_id`),
   KEY `idx_activity_product_is_deleted` (`is_deleted`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='活动商品';
@@ -895,5 +899,27 @@ CREATE TABLE IF NOT EXISTS `fulfillment_event` (
   PRIMARY KEY (`id`),
   KEY `idx_fe_subject` (`subject_type`, `subject_id`, `id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='履约事件时间线';
+
+-- -----------------------------------------------------------------------------
+-- home_carousel 首页商品轮播
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `home_carousel` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `product_id` BIGINT UNSIGNED NOT NULL,
+  `activity_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `activity_product_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `channel` VARCHAR(16) NOT NULL DEFAULT 'deal' COMMENT 'deal=直购/团购 group=拼团',
+  `sort_order` INT NOT NULL DEFAULT 0,
+  `status` TINYINT UNSIGNED NOT NULL DEFAULT 1 COMMENT '0=停用 1=启用',
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  `is_deleted` TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`),
+  KEY `idx_home_carousel_product` (`product_id`),
+  KEY `idx_home_carousel_activity_product` (`activity_product_id`),
+  KEY `idx_home_carousel_channel` (`channel`),
+  KEY `idx_home_carousel_status_sort` (`status`, `sort_order`),
+  KEY `idx_home_carousel_is_deleted` (`is_deleted`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='首页商品轮播';
 
 SET FOREIGN_KEY_CHECKS = 1;

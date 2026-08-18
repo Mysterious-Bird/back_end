@@ -14,13 +14,12 @@ import (
 )
 
 var (
-	ErrActivityNotFound         = errors.New("activity not found")
-	ErrActivityForbidden        = errors.New("activity forbidden")
-	ErrActivityNotActive        = errors.New("activity not active")
-	ErrActivityProductNotFound  = errors.New("activity product not found")
-	ErrActivityProductDuplicate = errors.New("activity product duplicate")
-	ErrActivityLimitExceeded    = errors.New("activity purchase limit exceeded")
-	ErrActivityRegisterWindow   = errors.New("not in register purchase window")
+	ErrActivityNotFound        = errors.New("activity not found")
+	ErrActivityForbidden       = errors.New("activity forbidden")
+	ErrActivityNotActive       = errors.New("activity not active")
+	ErrActivityProductNotFound = errors.New("activity product not found")
+	ErrActivityLimitExceeded   = errors.New("activity purchase limit exceeded")
+	ErrActivityRegisterWindow  = errors.New("not in register purchase window")
 )
 
 type ActivityService struct {
@@ -28,76 +27,79 @@ type ActivityService struct {
 }
 
 type ActivityInput struct {
-	MerchantID   uint64
-	Name         string
-	Description  *string
-	CoverURL     *string
-	BannerImages []string
-	StartAt      time.Time
-	EndAt        time.Time
-	Status       uint8
-	EnableCoupon uint8
-	SortOrder    int
+	MerchantID           uint64
+	Name                 string
+	Description          *string
+	CoverURL             *string
+	BannerImages         []string
+	StartAt              time.Time
+	EndAt                time.Time
+	Status               uint8
+	EnableCoupon         uint8
+	UserMaxQty           uint32
+	UserDailyMax         uint32
+	UserDailyRefreshTime string
+	SortOrder            int
 }
 
 type ActivityProductInput struct {
-	ProductID               uint64
-	ActivityPrice           float64
-	ActivityStock           uint32
-	PerUserMaxQty           uint32
-	PerUserMaxOrders        uint32
-	DailyMax                uint32
-	WeeklyMax               uint32
-	MonthlyMax              uint32
-	ActivityMax             uint32
-	RegisterHours           uint32
-	RegisterMax             uint32
-	PlatformDailyMax        uint32
-	DailyRefreshTime        string
-	WeeklyRefreshWeekday    uint8
-	WeeklyRefreshTime       string
-	MonthlyRefreshDay       uint8
-	MonthlyRefreshTime      string
-	EnableGroupBuy          uint8
-	GroupBuyPrice           *float64
-	GroupBuyTargetCount     *uint32
-	GroupBuyAllowRepeat     uint8
-	GroupBuyMaxJoinsPerUser uint32
+	ProductID                  uint64
+	ActivityPrice              float64
+	ActivityStock              uint32
+	PerUserMaxQty              uint32
+	PerUserMaxOrders           uint32
+	DailyMax                   uint32
+	WeeklyMax                  uint32
+	MonthlyMax                 uint32
+	ActivityMax                uint32
+	RegisterHours              uint32
+	RegisterMax                uint32
+	PlatformDailyMax           uint32
+	DailyRefreshTime           string
+	WeeklyRefreshWeekday       uint8
+	WeeklyRefreshTime          string
+	MonthlyRefreshDay          uint8
+	MonthlyRefreshTime         string
+	EnableGroupBuy             uint8
+	GroupBuyPrice              *float64
+	GroupBuyTargetCount        *uint32
+	GroupBuyAllowRepeat        uint8
+	GroupBuyMaxJoinsPerUser    uint32
 	GroupBuyMaxConcurrentTeams uint32
-	ExpireDays              *uint32
-	EnableCoupon            uint8
-	SortOrder               int
-	Status                  uint8
+	ExpireDays                 *uint32
+	EnableCoupon               uint8
+	SortOrder                  int
+	Status                     uint8
 }
 
 // UpdateActivityProductPatch 活动商品部分更新。
 type UpdateActivityProductPatch struct {
-	ActivityPrice           *float64
-	ActivityStock           *uint32
-	PerUserMaxQty           *uint32
-	PerUserMaxOrders        *uint32
-	DailyMax                *uint32
-	WeeklyMax               *uint32
-	MonthlyMax              *uint32
-	ActivityMax             *uint32
-	RegisterHours           *uint32
-	RegisterMax             *uint32
-	PlatformDailyMax        *uint32
-	DailyRefreshTime        *string
-	WeeklyRefreshWeekday    *uint8
-	WeeklyRefreshTime       *string
-	MonthlyRefreshDay       *uint8
-	MonthlyRefreshTime      *string
-	EnableGroupBuy          *uint8
-	GroupBuyPrice           *float64
-	GroupBuyTargetCount     *uint32
-	GroupBuyAllowRepeat     *uint8
-	GroupBuyMaxJoinsPerUser *uint32
+	ActivityPrice              *float64
+	ActivityStock              *uint32
+	PerUserMaxQty              *uint32
+	PerUserMaxOrders           *uint32
+	DailyMax                   *uint32
+	WeeklyMax                  *uint32
+	MonthlyMax                 *uint32
+	ActivityMax                *uint32
+	RegisterHours              *uint32
+	RegisterMax                *uint32
+	PlatformDailyMax           *uint32
+	DailyRefreshTime           *string
+	WeeklyRefreshWeekday       *uint8
+	WeeklyRefreshTime          *string
+	MonthlyRefreshDay          *uint8
+	MonthlyRefreshTime         *string
+	EnableGroupBuy             *uint8
+	GroupBuyPrice              *float64
+	GroupBuyTargetCount        *uint32
+	GroupBuyAllowRepeat        *uint8
+	GroupBuyMaxJoinsPerUser    *uint32
 	GroupBuyMaxConcurrentTeams *uint32
-	ExpireDays              *uint32
-	EnableCoupon            *uint8
-	SortOrder               *int
-	Status                  *uint8
+	ExpireDays                 *uint32
+	EnableCoupon               *uint8
+	SortOrder                  *int
+	Status                     *uint8
 }
 
 type ActivityListFilter struct {
@@ -163,11 +165,11 @@ type ActivityOrderContext struct {
 }
 
 type ActivityGroupBuyConfig struct {
-	EnableGroupBuy          uint8
-	GroupBuyPrice           float64
-	GroupBuyTargetCount     uint32
-	GroupBuyAllowRepeat     uint8
-	GroupBuyMaxJoinsPerUser uint32
+	EnableGroupBuy             uint8
+	GroupBuyPrice              float64
+	GroupBuyTargetCount        uint32
+	GroupBuyAllowRepeat        uint8
+	GroupBuyMaxJoinsPerUser    uint32
 	GroupBuyMaxConcurrentTeams uint32
 }
 
@@ -255,6 +257,11 @@ func (s *ActivityService) ListProducts(activityID uint64, merchantID *uint64) ([
 }
 
 func (s *ActivityService) Create(input ActivityInput) (*model.Activity, error) {
+	rt, err := NormalizeDailyRefreshTime(input.UserDailyRefreshTime)
+	if err != nil {
+		return nil, fmt.Errorf("%w: user_daily_refresh_time 格式无效", ErrInvalidProductArg)
+	}
+	input.UserDailyRefreshTime = rt
 	if err := validateActivityInput(input); err != nil {
 		return nil, err
 	}
@@ -263,7 +270,8 @@ func (s *ActivityService) Create(input ActivityInput) (*model.Activity, error) {
 		Description: input.Description, CoverURL: input.CoverURL,
 		BannerImages: input.BannerImages, StartAt: input.StartAt, EndAt: input.EndAt,
 		Status: input.Status, EnableCoupon: normalizeEnableCoupon(input.EnableCoupon),
-		SortOrder: input.SortOrder,
+		UserMaxQty: input.UserMaxQty, UserDailyMax: input.UserDailyMax,
+		UserDailyRefreshTime: input.UserDailyRefreshTime, SortOrder: input.SortOrder,
 	}
 	if act.Status == 0 {
 		act.Status = model.ActivityStatusDraft
@@ -282,11 +290,19 @@ func (s *ActivityService) Update(id uint64, input ActivityInput, merchantID *uin
 	if err := validateActivityInput(input); err != nil {
 		return nil, err
 	}
+	rt, err := NormalizeDailyRefreshTime(input.UserDailyRefreshTime)
+	if err != nil {
+		return nil, fmt.Errorf("%w: user_daily_refresh_time 格式无效", ErrInvalidProductArg)
+	}
+	input.UserDailyRefreshTime = rt
 	updates := map[string]interface{}{
 		"name": input.Name, "description": input.Description, "cover_url": input.CoverURL,
 		"banner_images": toJSONColumn(input.BannerImages),
 		"start_at":      input.StartAt, "end_at": input.EndAt, "status": input.Status,
-		"enable_coupon": normalizeEnableCoupon(input.EnableCoupon), "sort_order": input.SortOrder,
+		"enable_coupon": normalizeEnableCoupon(input.EnableCoupon),
+		"user_max_qty":  input.UserMaxQty, "user_daily_max": input.UserDailyMax,
+		"user_daily_refresh_time": input.UserDailyRefreshTime,
+		"sort_order":              input.SortOrder,
 	}
 	if err := s.DB.Model(act).Updates(updates).Error; err != nil {
 		return nil, err
@@ -297,6 +313,9 @@ func (s *ActivityService) Update(id uint64, input ActivityInput, merchantID *uin
 func (s *ActivityService) Delete(id uint64, merchantID *uint64) error {
 	act, err := s.GetByID(id, merchantID)
 	if err != nil {
+		return err
+	}
+	if err := assertActivityDeletable(s.DB, id); err != nil {
 		return err
 	}
 	return s.DB.Transaction(func(tx *gorm.DB) error {
@@ -359,20 +378,8 @@ func (s *ActivityService) AddProduct(activityID uint64, input ActivityProductInp
 		status = 1
 	}
 
-	existing, found, err := s.findActivityProductPair(activityID, input.ProductID)
-	if err != nil {
-		return nil, err
-	}
-	if found {
-		if existing.IsDeleted == model.NotDeleted {
-			return nil, ErrActivityProductDuplicate
-		}
-		if err := s.restoreActivityProduct(&existing, input, maxJoins, status); err != nil {
-			return nil, err
-		}
-		return s.GetActivityProduct(existing.ID, merchantID)
-	}
-
+	// 同一活动允许同一 catalog product_id 多条活动商品
+	// （例如 9.9 直购、1 元拼团、9.9 拼团并存）。每次添加都插入新行。
 	input = normalizeActivityProductGroupBuyInput(input)
 	ap := model.ActivityProduct{
 		ActivityID: activityID, ProductID: input.ProductID,
@@ -384,60 +391,18 @@ func (s *ActivityService) AddProduct(activityID uint64, input ActivityProductInp
 		WeeklyRefreshWeekday: input.WeeklyRefreshWeekday, WeeklyRefreshTime: input.WeeklyRefreshTime,
 		MonthlyRefreshDay: input.MonthlyRefreshDay, MonthlyRefreshTime: input.MonthlyRefreshTime,
 		EnableGroupBuy: input.EnableGroupBuy, GroupBuyPrice: input.GroupBuyPrice,
-		GroupBuyTargetCount:     input.GroupBuyTargetCount,
-		GroupBuyAllowRepeat:     input.GroupBuyAllowRepeat,
-		GroupBuyMaxJoinsPerUser: maxJoins,
+		GroupBuyTargetCount:        input.GroupBuyTargetCount,
+		GroupBuyAllowRepeat:        input.GroupBuyAllowRepeat,
+		GroupBuyMaxJoinsPerUser:    maxJoins,
 		GroupBuyMaxConcurrentTeams: input.GroupBuyMaxConcurrentTeams,
-		ExpireDays:              normalizeExpireDays(input.ExpireDays),
-		EnableCoupon:            normalizeEnableCoupon(input.EnableCoupon),
-		SortOrder:               input.SortOrder, Status: status,
+		ExpireDays:                 normalizeExpireDays(input.ExpireDays),
+		EnableCoupon:               normalizeEnableCoupon(input.EnableCoupon),
+		SortOrder:                  input.SortOrder, Status: status,
 	}
 	if err := s.DB.Create(&ap).Error; err != nil {
-		if isMySQLDuplicateKey(err) {
-			existing, found, findErr := s.findActivityProductPair(activityID, input.ProductID)
-			if findErr != nil {
-				return nil, findErr
-			}
-			if found {
-				if existing.IsDeleted == model.NotDeleted {
-					return nil, ErrActivityProductDuplicate
-				}
-				if restoreErr := s.restoreActivityProduct(&existing, input, maxJoins, status); restoreErr != nil {
-					return nil, restoreErr
-				}
-				return s.GetActivityProduct(existing.ID, merchantID)
-			}
-		}
 		return nil, fmt.Errorf("添加活动商品失败: %w", err)
 	}
 	return s.GetActivityProduct(ap.ID, merchantID)
-}
-
-func activityProductPairWhereClause() string {
-	return "activity_id = ? AND product_id = ?"
-}
-
-func (s *ActivityService) findActivityProductPair(activityID, productID uint64) (model.ActivityProduct, bool, error) {
-	var existing model.ActivityProduct
-	err := s.DB.Unscoped().
-		Where(activityProductPairWhereClause(), activityID, productID).
-		First(&existing).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return model.ActivityProduct{}, false, nil
-	}
-	if err != nil {
-		return model.ActivityProduct{}, false, err
-	}
-	return existing, true, nil
-}
-
-func (s *ActivityService) restoreActivityProduct(existing *model.ActivityProduct, input ActivityProductInput, maxJoins uint32, status uint8) error {
-	updates := activityProductUpdates(input, maxJoins, status)
-	updates["is_deleted"] = model.NotDeleted
-	if err := s.DB.Unscoped().Model(existing).Updates(updates).Error; err != nil {
-		return fmt.Errorf("恢复活动商品失败: %w", err)
-	}
-	return nil
 }
 
 func isMySQLDuplicateKey(err error) bool {
@@ -470,13 +435,13 @@ func activityProductUpdates(input ActivityProductInput, maxJoins uint32, status 
 		"weekly_refresh_weekday": input.WeeklyRefreshWeekday, "weekly_refresh_time": input.WeeklyRefreshTime,
 		"monthly_refresh_day": input.MonthlyRefreshDay, "monthly_refresh_time": input.MonthlyRefreshTime,
 		"enable_group_buy": input.EnableGroupBuy, "group_buy_price": input.GroupBuyPrice,
-		"group_buy_target_count":       input.GroupBuyTargetCount,
-		"group_buy_allow_repeat":       input.GroupBuyAllowRepeat,
-		"group_buy_max_joins_per_user": maxJoins,
+		"group_buy_target_count":         input.GroupBuyTargetCount,
+		"group_buy_allow_repeat":         input.GroupBuyAllowRepeat,
+		"group_buy_max_joins_per_user":   maxJoins,
 		"group_buy_max_concurrent_teams": input.GroupBuyMaxConcurrentTeams,
-		"expire_days":                  normalizeExpireDays(input.ExpireDays),
-		"enable_coupon":                normalizeEnableCoupon(input.EnableCoupon),
-		"sort_order":                   input.SortOrder, "status": status,
+		"expire_days":                    normalizeExpireDays(input.ExpireDays),
+		"enable_coupon":                  normalizeEnableCoupon(input.EnableCoupon),
+		"sort_order":                     input.SortOrder, "status": status,
 	}
 }
 
@@ -551,65 +516,65 @@ func (p UpdateActivityProductPatch) hasField() bool {
 
 func activityProductInputToPatch(input ActivityProductInput) UpdateActivityProductPatch {
 	patch := UpdateActivityProductPatch{
-		ActivityPrice:           &input.ActivityPrice,
-		ActivityStock:           &input.ActivityStock,
-		PerUserMaxQty:           &input.PerUserMaxQty,
-		PerUserMaxOrders:        &input.PerUserMaxOrders,
-		DailyMax:                &input.DailyMax,
-		WeeklyMax:               &input.WeeklyMax,
-		MonthlyMax:              &input.MonthlyMax,
-		ActivityMax:             &input.ActivityMax,
-		RegisterHours:           &input.RegisterHours,
-		RegisterMax:             &input.RegisterMax,
-		PlatformDailyMax:        &input.PlatformDailyMax,
-		DailyRefreshTime:        &input.DailyRefreshTime,
-		WeeklyRefreshWeekday:    &input.WeeklyRefreshWeekday,
-		WeeklyRefreshTime:       &input.WeeklyRefreshTime,
-		MonthlyRefreshDay:       &input.MonthlyRefreshDay,
-		MonthlyRefreshTime:      &input.MonthlyRefreshTime,
-		EnableGroupBuy:          &input.EnableGroupBuy,
-		GroupBuyPrice:           input.GroupBuyPrice,
-		GroupBuyTargetCount:     input.GroupBuyTargetCount,
-		GroupBuyAllowRepeat:     &input.GroupBuyAllowRepeat,
-		GroupBuyMaxJoinsPerUser: &input.GroupBuyMaxJoinsPerUser,
+		ActivityPrice:              &input.ActivityPrice,
+		ActivityStock:              &input.ActivityStock,
+		PerUserMaxQty:              &input.PerUserMaxQty,
+		PerUserMaxOrders:           &input.PerUserMaxOrders,
+		DailyMax:                   &input.DailyMax,
+		WeeklyMax:                  &input.WeeklyMax,
+		MonthlyMax:                 &input.MonthlyMax,
+		ActivityMax:                &input.ActivityMax,
+		RegisterHours:              &input.RegisterHours,
+		RegisterMax:                &input.RegisterMax,
+		PlatformDailyMax:           &input.PlatformDailyMax,
+		DailyRefreshTime:           &input.DailyRefreshTime,
+		WeeklyRefreshWeekday:       &input.WeeklyRefreshWeekday,
+		WeeklyRefreshTime:          &input.WeeklyRefreshTime,
+		MonthlyRefreshDay:          &input.MonthlyRefreshDay,
+		MonthlyRefreshTime:         &input.MonthlyRefreshTime,
+		EnableGroupBuy:             &input.EnableGroupBuy,
+		GroupBuyPrice:              input.GroupBuyPrice,
+		GroupBuyTargetCount:        input.GroupBuyTargetCount,
+		GroupBuyAllowRepeat:        &input.GroupBuyAllowRepeat,
+		GroupBuyMaxJoinsPerUser:    &input.GroupBuyMaxJoinsPerUser,
 		GroupBuyMaxConcurrentTeams: &input.GroupBuyMaxConcurrentTeams,
-		ExpireDays:              input.ExpireDays,
-		EnableCoupon:            &input.EnableCoupon,
-		SortOrder:               &input.SortOrder,
-		Status:                  &input.Status,
+		ExpireDays:                 input.ExpireDays,
+		EnableCoupon:               &input.EnableCoupon,
+		SortOrder:                  &input.SortOrder,
+		Status:                     &input.Status,
 	}
 	return patch
 }
 
 func mergeActivityProductPatch(ap *model.ActivityProduct, patch UpdateActivityProductPatch) ActivityProductInput {
 	merged := ActivityProductInput{
-		ProductID:               ap.ProductID,
-		ActivityPrice:           ap.ActivityPrice,
-		ActivityStock:           ap.ActivityStock,
-		PerUserMaxQty:           ap.PerUserMaxQty,
-		PerUserMaxOrders:        ap.PerUserMaxOrders,
-		DailyMax:                ap.DailyMax,
-		WeeklyMax:               ap.WeeklyMax,
-		MonthlyMax:              ap.MonthlyMax,
-		ActivityMax:             ap.ActivityMax,
-		RegisterHours:           ap.RegisterHours,
-		RegisterMax:             ap.RegisterMax,
-		PlatformDailyMax:        ap.PlatformDailyMax,
-		DailyRefreshTime:        ap.DailyRefreshTime,
-		WeeklyRefreshWeekday:    ap.WeeklyRefreshWeekday,
-		WeeklyRefreshTime:       ap.WeeklyRefreshTime,
-		MonthlyRefreshDay:       ap.MonthlyRefreshDay,
-		MonthlyRefreshTime:       ap.MonthlyRefreshTime,
-		EnableGroupBuy:          ap.EnableGroupBuy,
-		GroupBuyPrice:           ap.GroupBuyPrice,
-		GroupBuyTargetCount:     ap.GroupBuyTargetCount,
-		GroupBuyAllowRepeat:     ap.GroupBuyAllowRepeat,
-		GroupBuyMaxJoinsPerUser: ap.GroupBuyMaxJoinsPerUser,
+		ProductID:                  ap.ProductID,
+		ActivityPrice:              ap.ActivityPrice,
+		ActivityStock:              ap.ActivityStock,
+		PerUserMaxQty:              ap.PerUserMaxQty,
+		PerUserMaxOrders:           ap.PerUserMaxOrders,
+		DailyMax:                   ap.DailyMax,
+		WeeklyMax:                  ap.WeeklyMax,
+		MonthlyMax:                 ap.MonthlyMax,
+		ActivityMax:                ap.ActivityMax,
+		RegisterHours:              ap.RegisterHours,
+		RegisterMax:                ap.RegisterMax,
+		PlatformDailyMax:           ap.PlatformDailyMax,
+		DailyRefreshTime:           ap.DailyRefreshTime,
+		WeeklyRefreshWeekday:       ap.WeeklyRefreshWeekday,
+		WeeklyRefreshTime:          ap.WeeklyRefreshTime,
+		MonthlyRefreshDay:          ap.MonthlyRefreshDay,
+		MonthlyRefreshTime:         ap.MonthlyRefreshTime,
+		EnableGroupBuy:             ap.EnableGroupBuy,
+		GroupBuyPrice:              ap.GroupBuyPrice,
+		GroupBuyTargetCount:        ap.GroupBuyTargetCount,
+		GroupBuyAllowRepeat:        ap.GroupBuyAllowRepeat,
+		GroupBuyMaxJoinsPerUser:    ap.GroupBuyMaxJoinsPerUser,
 		GroupBuyMaxConcurrentTeams: ap.GroupBuyMaxConcurrentTeams,
-		ExpireDays:              ap.ExpireDays,
-		EnableCoupon:            ap.EnableCoupon,
-		SortOrder:               ap.SortOrder,
-		Status:                  ap.Status,
+		ExpireDays:                 ap.ExpireDays,
+		EnableCoupon:               ap.EnableCoupon,
+		SortOrder:                  ap.SortOrder,
+		Status:                     ap.Status,
 	}
 	if patch.ActivityPrice != nil {
 		merged.ActivityPrice = *patch.ActivityPrice
@@ -708,12 +673,18 @@ func (s *ActivityService) RemoveProductInActivity(activityID, apID uint64, merch
 	if err != nil {
 		return err
 	}
+	if err := assertActivityProductDeletable(s.DB, ap); err != nil {
+		return err
+	}
 	return query.SoftDelete(s.DB, ap).Error
 }
 
 func (s *ActivityService) RemoveProduct(apID uint64, merchantID *uint64) error {
 	ap, err := s.GetActivityProduct(apID, merchantID)
 	if err != nil {
+		return err
+	}
+	if err := assertActivityProductDeletable(s.DB, ap); err != nil {
 		return err
 	}
 	return query.SoftDelete(s.DB, ap).Error
@@ -1011,7 +982,7 @@ func buildActivityProductStoreView(act *model.Activity, ap *model.ActivityProduc
 		cover = p.CoverURL
 	}
 	deal := PurchaseOption{
-		Available:    avail > 0,
+		Available:    !canGroup && avail > 0,
 		Price:        ap.ActivityPrice,
 		CanUseCoupon: canCoupon,
 	}
@@ -1025,8 +996,8 @@ func buildActivityProductStoreView(act *model.Activity, ap *model.ActivityProduc
 			Price:        groupPrice,
 			CanUseCoupon: canCoupon,
 		},
-		TargetCount:     ap.GroupBuyTargetCount,
-		AllowRepeatJoin: ap.GroupBuyAllowRepeat,
+		TargetCount:        ap.GroupBuyTargetCount,
+		AllowRepeatJoin:    ap.GroupBuyAllowRepeat,
 		MaxConcurrentTeams: ap.GroupBuyMaxConcurrentTeams,
 	}
 
@@ -1044,7 +1015,7 @@ func buildActivityProductStoreView(act *model.Activity, ap *model.ActivityProduc
 			Deal:  deal,
 			Group: group,
 		},
-		LimitLabels:  buildSeckillLimitLabels(ap),
+		LimitLabels:  buildSeckillLimitLabels(ap, act.UserMaxQty, act.UserDailyMax),
 		RemainingQty: avail,
 	}
 }
@@ -1091,7 +1062,11 @@ func (s *ActivityService) enrichActivityProductItemViewsApplicable(views []Activ
 
 // enrichActivityProductLimits 写入限购标签与本单剩余可买件数（各限购剩余取最小）。
 func (s *ActivityService) enrichActivityProductLimits(view *ActivityProductStoreView, ap *model.ActivityProduct, accountID *uint64) error {
-	view.LimitLabels = buildSeckillLimitLabels(ap)
+	actLimits, err := loadActivityUserLimitConfig(s.DB, ap.ActivityID)
+	if err != nil {
+		return err
+	}
+	view.LimitLabels = buildSeckillLimitLabels(ap, actLimits.UserMaxQty, actLimits.UserDailyMax)
 	view.LimitReached = false
 	view.LimitReason = ""
 
@@ -1214,11 +1189,11 @@ func (s *ActivityService) ResolveForOrder(accountID uint64, activityProductID ui
 		maxJoins := ap.GroupBuyMaxJoinsPerUser
 		unitPrice = *ap.GroupBuyPrice
 		gbConfig = &ActivityGroupBuyConfig{
-			EnableGroupBuy:          1,
-			GroupBuyPrice:           *ap.GroupBuyPrice,
-			GroupBuyTargetCount:     target,
-			GroupBuyAllowRepeat:     ap.GroupBuyAllowRepeat,
-			GroupBuyMaxJoinsPerUser: maxJoins,
+			EnableGroupBuy:             1,
+			GroupBuyPrice:              *ap.GroupBuyPrice,
+			GroupBuyTargetCount:        target,
+			GroupBuyAllowRepeat:        ap.GroupBuyAllowRepeat,
+			GroupBuyMaxJoinsPerUser:    maxJoins,
 			GroupBuyMaxConcurrentTeams: ap.GroupBuyMaxConcurrentTeams,
 		}
 	}
@@ -1447,6 +1422,9 @@ func validateActivityInput(input ActivityInput) error {
 	}
 	if !input.EndAt.After(input.StartAt) {
 		return ErrInvalidProductArg
+	}
+	if _, err := NormalizeDailyRefreshTime(input.UserDailyRefreshTime); err != nil {
+		return fmt.Errorf("%w: user_daily_refresh_time 格式无效", ErrInvalidProductArg)
 	}
 	return nil
 }

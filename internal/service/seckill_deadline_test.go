@@ -102,3 +102,19 @@ func TestSeckillDeadlineAt_PicksEarliestAcrossDimensions(t *testing.T) {
 		t.Fatalf("got %v want %v", got, want)
 	}
 }
+
+func TestSeckillDeadlineAt_ActivityUserDailyUsesOwnRefresh(t *testing.T) {
+	loc := time.Local
+	now := time.Date(2026, 8, 19, 13, 0, 0, 0, loc)
+	act := &model.Activity{
+		EndAt:                time.Date(2026, 8, 30, 0, 0, 0, 0, loc),
+		UserDailyMax:         2,
+		UserDailyRefreshTime: "18:00:00",
+	}
+	ap := &model.ActivityProduct{DailyRefreshTime: "00:00:00"}
+	got := seckillDeadlineAt(act, ap, time.Time{}, false, now)
+	want := time.Date(2026, 8, 19, 18, 0, 0, 0, loc)
+	if !got.Equal(want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}

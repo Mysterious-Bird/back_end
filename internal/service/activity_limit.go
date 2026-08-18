@@ -208,6 +208,51 @@ func sumBoughtQty(db *gorm.DB, accountID, activityProductID uint64) (uint32, err
 	return sumBoughtQtyInWindow(db, accountID, activityProductID, time.Time{}, time.Time{})
 }
 
+// sumBoughtQtyByActivity 统计账号在整场活动下已购件数（跨活动商品，排除取消/拼团失败等）。
+func sumBoughtQtyByActivity(db *gorm.DB, accountID, activityID uint64) (uint32, error) {
+	return sumBoughtQtyByActivityInWindow(db, accountID, activityID, time.Time{}, time.Time{})
+}
+
+func sumBoughtQtyByActivityInWindow(db *gorm.DB, accountID, activityID uint64, start, end time.Time) (uint32, error) {
+	if db == nil || accountID == 0 || activityID == 0 {
+		return 0, nil
+	}
+	q := db.Table("order_item oi").
+		Select("COALESCE(SUM(oi.quantity), 0)").
+		Joins("JOIN `order` o ON o.id = oi.order_id AND o.is_deleted = ?", model.NotDeleted).
+		Where("o.account_id = ? AND oi.activity_id = ? AND oi.is_deleted = ?", accountID, activityID, model.NotDeleted).
+		Where("o.status NOT IN ?", orderStatusesExcludedFromBoughtQty)
+	if !start.IsZero() && !end.IsZero() {
+		q = q.Where("o.created_at >= ? AND o.created_at < ?", start, end)
+	}
+	var bought uint32
+	err := q.Scan(&bought).Error
+	return bought, err
+}
+
+func loadActivityUserMaxQty(db *gorm.DB, activityID uint64) (uint32, error) {
+	cfg, err := loadActivityUserLimitConfig(db, activityID)
+	return cfg.UserMaxQty, err
+}
+
+type activityUserLimitConfig struct {
+	UserMaxQty           uint32 `gorm:"column:user_max_qty"`
+	UserDailyMax         uint32 `gorm:"column:user_daily_max"`
+	UserDailyRefreshTime string `gorm:"column:user_daily_refresh_time"`
+}
+
+func loadActivityUserLimitConfig(db *gorm.DB, activityID uint64) (activityUserLimitConfig, error) {
+	var cfg activityUserLimitConfig
+	if db == nil || activityID == 0 {
+		return cfg, nil
+	}
+	err := db.Model(&model.Activity{}).
+		Select("user_max_qty", "user_daily_max", "user_daily_refresh_time").
+		Where("id = ? AND is_deleted = ?", activityID, model.NotDeleted).
+		Scan(&cfg).Error
+	return cfg, err
+}
+
 type activityRemainResult struct {
 	RemainingQty uint32
 	LimitReached bool
@@ -247,6 +292,17 @@ func computeActivityRemaining(
 
 	if ap.PerUserMaxQty > 0 {
 		tighten(ap.PerUserMaxQty, "per_user_qty")
+	}
+
+	actLimits, err := loadActivityUserLimitConfig(db, ap.ActivityID)
+	if err != nil {
+		return out, err
+	}
+	if actLimits.UserMaxQty > 0 {
+		tighten(actLimits.UserMaxQty, "activity_user_max")
+	}
+	if actLimits.UserDailyMax > 0 {
+		tighten(actLimits.UserDailyMax, "activity_user_daily")
 	}
 	if ap.DailyMax > 0 {
 		tighten(ap.DailyMax, "daily")
@@ -338,6 +394,32 @@ func computeActivityRemaining(
 			left = ap.RegisterMax - bought
 		}
 		tighten(left, "register_max")
+	}
+
+	if actLimits.UserMaxQty > 0 {
+		bought, err := sumBoughtQtyByActivity(db, *accountID, ap.ActivityID)
+		if err != nil {
+			return out, err
+		}
+		var left uint32
+		if bought < actLimits.UserMaxQty {
+			left = actLimits.UserMaxQty - bought
+		}
+		tighten(left, "activity_user_max")
+	}
+
+	if actLimits.UserDailyMax > 0 {
+		dayCfg := limitRefreshConfig{DailyTime: actLimits.UserDailyRefreshTime}
+		start, end := calendarWindowFor(now, "day", dayCfg)
+		bought, err := sumBoughtQtyByActivityInWindow(db, *accountID, ap.ActivityID, start, end)
+		if err != nil {
+			return out, err
+		}
+		var left uint32
+		if bought < actLimits.UserDailyMax {
+			left = actLimits.UserDailyMax - bought
+		}
+		tighten(left, "activity_user_daily")
 	}
 
 	return out, nil

@@ -20,79 +20,82 @@ type ActivityHandler struct {
 }
 
 type ActivityRequest struct {
-	Name         string     `json:"name" binding:"required"`
-	Description  *string    `json:"description"`
-	CoverURL     *string    `json:"cover_url"`
-	BannerImages []string   `json:"banner_images"`
-	StartAt      time.Time  `json:"start_at" binding:"required"`
-	EndAt        time.Time  `json:"end_at" binding:"required"`
-	Status       uint8      `json:"status" example:"2"`
-	EnableCoupon uint8      `json:"enable_coupon" example:"1"`
-	SortOrder    int        `json:"sort_order"`
+	Name                 string    `json:"name" binding:"required"`
+	Description          *string   `json:"description"`
+	CoverURL             *string   `json:"cover_url"`
+	BannerImages         []string  `json:"banner_images"`
+	StartAt              time.Time `json:"start_at" binding:"required"`
+	EndAt                time.Time `json:"end_at" binding:"required"`
+	Status               uint8     `json:"status" example:"2"`
+	EnableCoupon         uint8     `json:"enable_coupon" example:"1"`
+	UserMaxQty           uint32    `json:"user_max_qty" example:"0"`
+	UserDailyMax         uint32    `json:"user_daily_max" example:"0"`
+	UserDailyRefreshTime string    `json:"user_daily_refresh_time" example:"00:00"`
+	SortOrder            int       `json:"sort_order"`
 }
 
 type ActivityProductRequest struct {
-	ProductID               uint64   `json:"product_id"`
-	ActivityPrice           float64  `json:"activity_price"`
-	ActivityStock           uint32   `json:"activity_stock" example:"0"`
-	PerUserMaxQty           uint32   `json:"per_user_max_qty" example:"0"`
-	PerUserMaxOrders        uint32   `json:"per_user_max_orders" example:"0"`
-	DailyMax                uint32   `json:"daily_max" example:"0"`
-	WeeklyMax               uint32   `json:"weekly_max" example:"0"`
-	MonthlyMax              uint32   `json:"monthly_max" example:"0"`
-	ActivityMax             uint32   `json:"activity_max" example:"0"`
-	RegisterHours           uint32   `json:"register_hours" example:"0"`
-	RegisterMax             uint32   `json:"register_max" example:"0"`
-	PlatformDailyMax        uint32   `json:"platform_daily_max" example:"0"`
-	DailyRefreshTime        string   `json:"daily_refresh_time" example:"00:00:00"`
-	WeeklyRefreshWeekday    uint8    `json:"weekly_refresh_weekday" example:"1"`
-	WeeklyRefreshTime       string   `json:"weekly_refresh_time" example:"00:00:00"`
-	MonthlyRefreshDay       uint8    `json:"monthly_refresh_day" example:"1"`
-	MonthlyRefreshTime      string   `json:"monthly_refresh_time" example:"00:00:00"`
-	EnableGroupBuy          uint8    `json:"enable_group_buy" example:"0"`
-	GroupBuyPrice           *float64 `json:"group_buy_price"`
-	GroupBuyTargetCount     *uint32  `json:"group_buy_target_count"`
-	GroupBuyAllowRepeat     uint8    `json:"group_buy_allow_repeat" example:"0"`
-	GroupBuyMaxJoinsPerUser uint32   `json:"group_buy_max_joins_per_user" example:"1"`
-	GroupBuyMaxConcurrentTeams uint32 `json:"group_buy_max_concurrent_teams" example:"0"`
-	ExpireDays              *uint32  `json:"expire_days" example:"7"`
-	EnableCoupon            uint8    `json:"enable_coupon" example:"1"`
-	SortOrder               int      `json:"sort_order"`
-	Status                  uint8    `json:"status" example:"1"`
+	ProductID                  uint64   `json:"product_id"`
+	ActivityPrice              float64  `json:"activity_price"`
+	ActivityStock              uint32   `json:"activity_stock" example:"0"`
+	PerUserMaxQty              uint32   `json:"per_user_max_qty" example:"0"`
+	PerUserMaxOrders           uint32   `json:"per_user_max_orders" example:"0"`
+	DailyMax                   uint32   `json:"daily_max" example:"0"`
+	WeeklyMax                  uint32   `json:"weekly_max" example:"0"`
+	MonthlyMax                 uint32   `json:"monthly_max" example:"0"`
+	ActivityMax                uint32   `json:"activity_max" example:"0"`
+	RegisterHours              uint32   `json:"register_hours" example:"0"`
+	RegisterMax                uint32   `json:"register_max" example:"0"`
+	PlatformDailyMax           uint32   `json:"platform_daily_max" example:"0"`
+	DailyRefreshTime           string   `json:"daily_refresh_time" example:"00:00:00"`
+	WeeklyRefreshWeekday       uint8    `json:"weekly_refresh_weekday" example:"1"`
+	WeeklyRefreshTime          string   `json:"weekly_refresh_time" example:"00:00:00"`
+	MonthlyRefreshDay          uint8    `json:"monthly_refresh_day" example:"1"`
+	MonthlyRefreshTime         string   `json:"monthly_refresh_time" example:"00:00:00"`
+	EnableGroupBuy             uint8    `json:"enable_group_buy" example:"0"`
+	GroupBuyPrice              *float64 `json:"group_buy_price"`
+	GroupBuyTargetCount        *uint32  `json:"group_buy_target_count"`
+	GroupBuyAllowRepeat        uint8    `json:"group_buy_allow_repeat" example:"0"`
+	GroupBuyMaxJoinsPerUser    uint32   `json:"group_buy_max_joins_per_user" example:"1"`
+	GroupBuyMaxConcurrentTeams uint32   `json:"group_buy_max_concurrent_teams" example:"0"`
+	ExpireDays                 *uint32  `json:"expire_days" example:"7"`
+	EnableCoupon               uint8    `json:"enable_coupon" example:"1"`
+	SortOrder                  int      `json:"sort_order"`
+	Status                     uint8    `json:"status" example:"1"`
 }
 
 // activityProductAddBody 添加活动商品请求体（兼容多种前端字段写法）。
 type activityProductAddBody struct {
-	ProductID               FlexUInt64      `json:"product_id"`
-	ID                      FlexUInt64      `json:"id"`
-	ActivityPrice           FlexFloat64     `json:"activity_price"`
-	Price                   FlexFloat64     `json:"price"`
-	ActivityStock           FlexUInt32      `json:"activity_stock"`
-	Stock                   FlexUInt32      `json:"stock"`
-	PerUserMaxQty           FlexUInt32      `json:"per_user_max_qty"`
-	PerUserMaxOrders        FlexUInt32      `json:"per_user_max_orders"`
-	DailyMax                FlexUInt32      `json:"daily_max"`
-	WeeklyMax               FlexUInt32      `json:"weekly_max"`
-	MonthlyMax              FlexUInt32      `json:"monthly_max"`
-	ActivityMax             FlexUInt32      `json:"activity_max"`
-	RegisterHours           FlexUInt32      `json:"register_hours"`
-	RegisterMax             FlexUInt32      `json:"register_max"`
-	PlatformDailyMax        FlexUInt32      `json:"platform_daily_max"`
-	DailyRefreshTime        string          `json:"daily_refresh_time"`
-	WeeklyRefreshWeekday    FlexUInt8       `json:"weekly_refresh_weekday"`
-	WeeklyRefreshTime       string          `json:"weekly_refresh_time"`
-	MonthlyRefreshDay       FlexUInt8       `json:"monthly_refresh_day"`
-	MonthlyRefreshTime      string          `json:"monthly_refresh_time"`
-	EnableGroupBuy          FlexUInt8       `json:"enable_group_buy"`
-	GroupBuyPrice           FlexFloat64Ptr  `json:"group_buy_price"`
-	GroupBuyTargetCount     FlexUInt32Ptr   `json:"group_buy_target_count"`
-	GroupBuyAllowRepeat     FlexUInt8       `json:"group_buy_allow_repeat"`
-	GroupBuyMaxJoinsPerUser FlexUInt32      `json:"group_buy_max_joins_per_user"`
-	GroupBuyMaxConcurrentTeams FlexUInt32   `json:"group_buy_max_concurrent_teams"`
-	ExpireDays              FlexUInt32Ptr  `json:"expire_days"`
-	EnableCoupon            FlexUInt8       `json:"enable_coupon"`
-	SortOrder               FlexInt         `json:"sort_order"`
-	Status                  FlexUInt8       `json:"status"`
+	ProductID                  FlexUInt64     `json:"product_id"`
+	ID                         FlexUInt64     `json:"id"`
+	ActivityPrice              FlexFloat64    `json:"activity_price"`
+	Price                      FlexFloat64    `json:"price"`
+	ActivityStock              FlexUInt32     `json:"activity_stock"`
+	Stock                      FlexUInt32     `json:"stock"`
+	PerUserMaxQty              FlexUInt32     `json:"per_user_max_qty"`
+	PerUserMaxOrders           FlexUInt32     `json:"per_user_max_orders"`
+	DailyMax                   FlexUInt32     `json:"daily_max"`
+	WeeklyMax                  FlexUInt32     `json:"weekly_max"`
+	MonthlyMax                 FlexUInt32     `json:"monthly_max"`
+	ActivityMax                FlexUInt32     `json:"activity_max"`
+	RegisterHours              FlexUInt32     `json:"register_hours"`
+	RegisterMax                FlexUInt32     `json:"register_max"`
+	PlatformDailyMax           FlexUInt32     `json:"platform_daily_max"`
+	DailyRefreshTime           string         `json:"daily_refresh_time"`
+	WeeklyRefreshWeekday       FlexUInt8      `json:"weekly_refresh_weekday"`
+	WeeklyRefreshTime          string         `json:"weekly_refresh_time"`
+	MonthlyRefreshDay          FlexUInt8      `json:"monthly_refresh_day"`
+	MonthlyRefreshTime         string         `json:"monthly_refresh_time"`
+	EnableGroupBuy             FlexUInt8      `json:"enable_group_buy"`
+	GroupBuyPrice              FlexFloat64Ptr `json:"group_buy_price"`
+	GroupBuyTargetCount        FlexUInt32Ptr  `json:"group_buy_target_count"`
+	GroupBuyAllowRepeat        FlexUInt8      `json:"group_buy_allow_repeat"`
+	GroupBuyMaxJoinsPerUser    FlexUInt32     `json:"group_buy_max_joins_per_user"`
+	GroupBuyMaxConcurrentTeams FlexUInt32     `json:"group_buy_max_concurrent_teams"`
+	ExpireDays                 FlexUInt32Ptr  `json:"expire_days"`
+	EnableCoupon               FlexUInt8      `json:"enable_coupon"`
+	SortOrder                  FlexInt        `json:"sort_order"`
+	Status                     FlexUInt8      `json:"status"`
 }
 
 func parseActivityProductAddBody(c *gin.Context) (ActivityProductRequest, error) {
@@ -128,41 +131,41 @@ func parseActivityProductAddBody(c *gin.Context) (ActivityProductRequest, error)
 		MonthlyRefreshDay: raw.MonthlyRefreshDay.Uint8(), MonthlyRefreshTime: raw.MonthlyRefreshTime,
 		EnableGroupBuy: raw.EnableGroupBuy.Uint8(), GroupBuyPrice: raw.GroupBuyPrice.Ptr(),
 		GroupBuyTargetCount: raw.GroupBuyTargetCount.Ptr(), GroupBuyAllowRepeat: raw.GroupBuyAllowRepeat.Uint8(),
-		GroupBuyMaxJoinsPerUser: raw.GroupBuyMaxJoinsPerUser.Uint32(),
+		GroupBuyMaxJoinsPerUser:    raw.GroupBuyMaxJoinsPerUser.Uint32(),
 		GroupBuyMaxConcurrentTeams: raw.GroupBuyMaxConcurrentTeams.Uint32(),
-		ExpireDays: raw.ExpireDays.Ptr(),
-		EnableCoupon: raw.EnableCoupon.Uint8(), SortOrder: raw.SortOrder.Int(), Status: raw.Status.Uint8(),
+		ExpireDays:                 raw.ExpireDays.Ptr(),
+		EnableCoupon:               raw.EnableCoupon.Uint8(), SortOrder: raw.SortOrder.Int(), Status: raw.Status.Uint8(),
 	}, nil
 }
 
 // activityProductUpdateBody 更新活动商品（兼容字符串数字）。
 type activityProductUpdateBody struct {
-	ActivityPrice           FlexFloat64Ptr `json:"activity_price"`
-	ActivityStock           FlexUInt32Ptr  `json:"activity_stock"`
-	PerUserMaxQty           FlexUInt32Ptr  `json:"per_user_max_qty"`
-	PerUserMaxOrders        FlexUInt32Ptr  `json:"per_user_max_orders"`
-	DailyMax                FlexUInt32Ptr  `json:"daily_max"`
-	WeeklyMax               FlexUInt32Ptr  `json:"weekly_max"`
-	MonthlyMax              FlexUInt32Ptr  `json:"monthly_max"`
-	ActivityMax             FlexUInt32Ptr  `json:"activity_max"`
-	RegisterHours           FlexUInt32Ptr        `json:"register_hours"`
-	RegisterMax             FlexUInt32Ptr        `json:"register_max"`
-	PlatformDailyMax        FlexUInt32Ptr        `json:"platform_daily_max"`
-	DailyRefreshTime        FlexNullableString   `json:"daily_refresh_time"`
-	WeeklyRefreshWeekday    FlexUInt8Ptr         `json:"weekly_refresh_weekday"`
-	WeeklyRefreshTime       FlexNullableString   `json:"weekly_refresh_time"`
-	MonthlyRefreshDay       FlexUInt8Ptr         `json:"monthly_refresh_day"`
-	MonthlyRefreshTime      FlexNullableString   `json:"monthly_refresh_time"`
-	EnableGroupBuy          FlexUInt8Ptr         `json:"enable_group_buy"`
-	GroupBuyPrice           FlexFloat64Ptr `json:"group_buy_price"`
-	GroupBuyTargetCount     FlexUInt32Ptr  `json:"group_buy_target_count"`
-	GroupBuyAllowRepeat     FlexUInt8Ptr   `json:"group_buy_allow_repeat"`
-	GroupBuyMaxJoinsPerUser FlexUInt32Ptr  `json:"group_buy_max_joins_per_user"`
-	GroupBuyMaxConcurrentTeams FlexUInt32Ptr `json:"group_buy_max_concurrent_teams"`
-	ExpireDays              FlexUInt32Ptr `json:"expire_days"`
-	EnableCoupon            FlexUInt8Ptr   `json:"enable_coupon"`
-	SortOrder               FlexIntPtr     `json:"sort_order"`
-	Status                  FlexUInt8Ptr   `json:"status"`
+	ActivityPrice              FlexFloat64Ptr     `json:"activity_price"`
+	ActivityStock              FlexUInt32Ptr      `json:"activity_stock"`
+	PerUserMaxQty              FlexUInt32Ptr      `json:"per_user_max_qty"`
+	PerUserMaxOrders           FlexUInt32Ptr      `json:"per_user_max_orders"`
+	DailyMax                   FlexUInt32Ptr      `json:"daily_max"`
+	WeeklyMax                  FlexUInt32Ptr      `json:"weekly_max"`
+	MonthlyMax                 FlexUInt32Ptr      `json:"monthly_max"`
+	ActivityMax                FlexUInt32Ptr      `json:"activity_max"`
+	RegisterHours              FlexUInt32Ptr      `json:"register_hours"`
+	RegisterMax                FlexUInt32Ptr      `json:"register_max"`
+	PlatformDailyMax           FlexUInt32Ptr      `json:"platform_daily_max"`
+	DailyRefreshTime           FlexNullableString `json:"daily_refresh_time"`
+	WeeklyRefreshWeekday       FlexUInt8Ptr       `json:"weekly_refresh_weekday"`
+	WeeklyRefreshTime          FlexNullableString `json:"weekly_refresh_time"`
+	MonthlyRefreshDay          FlexUInt8Ptr       `json:"monthly_refresh_day"`
+	MonthlyRefreshTime         FlexNullableString `json:"monthly_refresh_time"`
+	EnableGroupBuy             FlexUInt8Ptr       `json:"enable_group_buy"`
+	GroupBuyPrice              FlexFloat64Ptr     `json:"group_buy_price"`
+	GroupBuyTargetCount        FlexUInt32Ptr      `json:"group_buy_target_count"`
+	GroupBuyAllowRepeat        FlexUInt8Ptr       `json:"group_buy_allow_repeat"`
+	GroupBuyMaxJoinsPerUser    FlexUInt32Ptr      `json:"group_buy_max_joins_per_user"`
+	GroupBuyMaxConcurrentTeams FlexUInt32Ptr      `json:"group_buy_max_concurrent_teams"`
+	ExpireDays                 FlexUInt32Ptr      `json:"expire_days"`
+	EnableCoupon               FlexUInt8Ptr       `json:"enable_coupon"`
+	SortOrder                  FlexIntPtr         `json:"sort_order"`
+	Status                     FlexUInt8Ptr       `json:"status"`
 }
 
 func parseActivityProductUpdateBody(c *gin.Context) (UpdateActivityProductRequest, error) {
@@ -180,41 +183,41 @@ func parseActivityProductUpdateBody(c *gin.Context) (UpdateActivityProductReques
 		MonthlyRefreshDay: raw.MonthlyRefreshDay.Ptr(), MonthlyRefreshTime: raw.MonthlyRefreshTime.Ptr(),
 		EnableGroupBuy: raw.EnableGroupBuy.Ptr(), GroupBuyPrice: raw.GroupBuyPrice.Ptr(),
 		GroupBuyTargetCount: raw.GroupBuyTargetCount.Ptr(), GroupBuyAllowRepeat: raw.GroupBuyAllowRepeat.Ptr(),
-		GroupBuyMaxJoinsPerUser: raw.GroupBuyMaxJoinsPerUser.Ptr(),
+		GroupBuyMaxJoinsPerUser:    raw.GroupBuyMaxJoinsPerUser.Ptr(),
 		GroupBuyMaxConcurrentTeams: raw.GroupBuyMaxConcurrentTeams.Ptr(),
-		ExpireDays: raw.ExpireDays.Ptr(),
-		EnableCoupon: raw.EnableCoupon.Ptr(), SortOrder: raw.SortOrder.Ptr(), Status: raw.Status.Ptr(),
+		ExpireDays:                 raw.ExpireDays.Ptr(),
+		EnableCoupon:               raw.EnableCoupon.Ptr(), SortOrder: raw.SortOrder.Ptr(), Status: raw.Status.Ptr(),
 	}, nil
 }
 
 // UpdateActivityProductRequest 活动商品部分更新，只传需要修改的字段。
 type UpdateActivityProductRequest struct {
-	ActivityPrice           *float64 `json:"activity_price" example:"9.9"`
-	ActivityStock           *uint32  `json:"activity_stock" example:"100"`
-	PerUserMaxQty           *uint32  `json:"per_user_max_qty" example:"1"`
-	PerUserMaxOrders        *uint32  `json:"per_user_max_orders" example:"0"`
-	DailyMax                *uint32  `json:"daily_max" example:"0"`
-	WeeklyMax               *uint32  `json:"weekly_max" example:"0"`
-	MonthlyMax              *uint32  `json:"monthly_max" example:"0"`
-	ActivityMax             *uint32  `json:"activity_max" example:"0"`
-	RegisterHours           *uint32  `json:"register_hours" example:"0"`
-	RegisterMax             *uint32  `json:"register_max" example:"0"`
-	PlatformDailyMax        *uint32  `json:"platform_daily_max" example:"0"`
-	DailyRefreshTime        *string  `json:"daily_refresh_time" example:"00:00:00"`
-	WeeklyRefreshWeekday    *uint8   `json:"weekly_refresh_weekday" example:"1"`
-	WeeklyRefreshTime       *string  `json:"weekly_refresh_time" example:"00:00:00"`
-	MonthlyRefreshDay       *uint8   `json:"monthly_refresh_day" example:"1"`
-	MonthlyRefreshTime      *string  `json:"monthly_refresh_time" example:"00:00:00"`
-	EnableGroupBuy          *uint8   `json:"enable_group_buy" example:"1"`
-	GroupBuyPrice           *float64 `json:"group_buy_price" example:"7.9"`
-	GroupBuyTargetCount     *uint32  `json:"group_buy_target_count" example:"3"`
-	GroupBuyAllowRepeat     *uint8   `json:"group_buy_allow_repeat" example:"0"`
-	GroupBuyMaxJoinsPerUser *uint32  `json:"group_buy_max_joins_per_user" example:"1"`
-	GroupBuyMaxConcurrentTeams *uint32 `json:"group_buy_max_concurrent_teams" example:"0"`
-	ExpireDays              *uint32  `json:"expire_days" example:"7"`
-	EnableCoupon            *uint8   `json:"enable_coupon" example:"1"`
-	SortOrder               *int     `json:"sort_order"`
-	Status                  *uint8   `json:"status" example:"1"`
+	ActivityPrice              *float64 `json:"activity_price" example:"9.9"`
+	ActivityStock              *uint32  `json:"activity_stock" example:"100"`
+	PerUserMaxQty              *uint32  `json:"per_user_max_qty" example:"1"`
+	PerUserMaxOrders           *uint32  `json:"per_user_max_orders" example:"0"`
+	DailyMax                   *uint32  `json:"daily_max" example:"0"`
+	WeeklyMax                  *uint32  `json:"weekly_max" example:"0"`
+	MonthlyMax                 *uint32  `json:"monthly_max" example:"0"`
+	ActivityMax                *uint32  `json:"activity_max" example:"0"`
+	RegisterHours              *uint32  `json:"register_hours" example:"0"`
+	RegisterMax                *uint32  `json:"register_max" example:"0"`
+	PlatformDailyMax           *uint32  `json:"platform_daily_max" example:"0"`
+	DailyRefreshTime           *string  `json:"daily_refresh_time" example:"00:00:00"`
+	WeeklyRefreshWeekday       *uint8   `json:"weekly_refresh_weekday" example:"1"`
+	WeeklyRefreshTime          *string  `json:"weekly_refresh_time" example:"00:00:00"`
+	MonthlyRefreshDay          *uint8   `json:"monthly_refresh_day" example:"1"`
+	MonthlyRefreshTime         *string  `json:"monthly_refresh_time" example:"00:00:00"`
+	EnableGroupBuy             *uint8   `json:"enable_group_buy" example:"1"`
+	GroupBuyPrice              *float64 `json:"group_buy_price" example:"7.9"`
+	GroupBuyTargetCount        *uint32  `json:"group_buy_target_count" example:"3"`
+	GroupBuyAllowRepeat        *uint8   `json:"group_buy_allow_repeat" example:"0"`
+	GroupBuyMaxJoinsPerUser    *uint32  `json:"group_buy_max_joins_per_user" example:"1"`
+	GroupBuyMaxConcurrentTeams *uint32  `json:"group_buy_max_concurrent_teams" example:"0"`
+	ExpireDays                 *uint32  `json:"expire_days" example:"7"`
+	EnableCoupon               *uint8   `json:"enable_coupon" example:"1"`
+	SortOrder                  *int     `json:"sort_order"`
+	Status                     *uint8   `json:"status" example:"1"`
 }
 
 func toActivityInput(req ActivityRequest, merchantID uint64) service.ActivityInput {
@@ -222,7 +225,9 @@ func toActivityInput(req ActivityRequest, merchantID uint64) service.ActivityInp
 		MerchantID: merchantID, Name: req.Name, Description: req.Description,
 		CoverURL: req.CoverURL, BannerImages: req.BannerImages,
 		StartAt: req.StartAt, EndAt: req.EndAt, Status: req.Status,
-		EnableCoupon: req.EnableCoupon, SortOrder: req.SortOrder,
+		EnableCoupon: req.EnableCoupon, UserMaxQty: req.UserMaxQty,
+		UserDailyMax: req.UserDailyMax, UserDailyRefreshTime: req.UserDailyRefreshTime,
+		SortOrder: req.SortOrder,
 	}
 }
 
@@ -231,18 +236,18 @@ func toActivityProductInput(req ActivityProductRequest) service.ActivityProductI
 		ProductID: req.ProductID, ActivityPrice: req.ActivityPrice,
 		ActivityStock: req.ActivityStock, PerUserMaxQty: req.PerUserMaxQty,
 		PerUserMaxOrders: req.PerUserMaxOrders,
-		DailyMax: req.DailyMax, WeeklyMax: req.WeeklyMax, MonthlyMax: req.MonthlyMax,
+		DailyMax:         req.DailyMax, WeeklyMax: req.WeeklyMax, MonthlyMax: req.MonthlyMax,
 		ActivityMax: req.ActivityMax, RegisterHours: req.RegisterHours, RegisterMax: req.RegisterMax,
 		PlatformDailyMax: req.PlatformDailyMax, DailyRefreshTime: req.DailyRefreshTime,
 		WeeklyRefreshWeekday: req.WeeklyRefreshWeekday, WeeklyRefreshTime: req.WeeklyRefreshTime,
 		MonthlyRefreshDay: req.MonthlyRefreshDay, MonthlyRefreshTime: req.MonthlyRefreshTime,
 		EnableGroupBuy: req.EnableGroupBuy,
-		GroupBuyPrice: req.GroupBuyPrice, GroupBuyTargetCount: req.GroupBuyTargetCount,
-		GroupBuyAllowRepeat: req.GroupBuyAllowRepeat,
-		GroupBuyMaxJoinsPerUser: req.GroupBuyMaxJoinsPerUser,
+		GroupBuyPrice:  req.GroupBuyPrice, GroupBuyTargetCount: req.GroupBuyTargetCount,
+		GroupBuyAllowRepeat:        req.GroupBuyAllowRepeat,
+		GroupBuyMaxJoinsPerUser:    req.GroupBuyMaxJoinsPerUser,
 		GroupBuyMaxConcurrentTeams: req.GroupBuyMaxConcurrentTeams,
-		ExpireDays: req.ExpireDays,
-		EnableCoupon: req.EnableCoupon, SortOrder: req.SortOrder, Status: req.Status,
+		ExpireDays:                 req.ExpireDays,
+		EnableCoupon:               req.EnableCoupon, SortOrder: req.SortOrder, Status: req.Status,
 	}
 }
 
@@ -257,10 +262,10 @@ func toActivityProductPatch(req UpdateActivityProductRequest) service.UpdateActi
 		MonthlyRefreshDay: req.MonthlyRefreshDay, MonthlyRefreshTime: req.MonthlyRefreshTime,
 		EnableGroupBuy: req.EnableGroupBuy, GroupBuyPrice: req.GroupBuyPrice,
 		GroupBuyTargetCount: req.GroupBuyTargetCount, GroupBuyAllowRepeat: req.GroupBuyAllowRepeat,
-		GroupBuyMaxJoinsPerUser: req.GroupBuyMaxJoinsPerUser,
+		GroupBuyMaxJoinsPerUser:    req.GroupBuyMaxJoinsPerUser,
 		GroupBuyMaxConcurrentTeams: req.GroupBuyMaxConcurrentTeams,
-		ExpireDays: req.ExpireDays,
-		EnableCoupon: req.EnableCoupon, SortOrder: req.SortOrder, Status: req.Status,
+		ExpireDays:                 req.ExpireDays,
+		EnableCoupon:               req.EnableCoupon, SortOrder: req.SortOrder, Status: req.Status,
 	}
 }
 
@@ -713,6 +718,14 @@ func (h *ActivityHandler) GetPublicProduct(c *gin.Context) {
 
 func handleActivityError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, service.ErrCatalogInUse):
+		msg := service.CatalogInUseMessage(err)
+		data := gin.H{"reason": "catalog_in_use"}
+		var inUse *service.CatalogInUseError
+		if errors.As(err, &inUse) && inUse != nil {
+			data["reason"] = inUse.Reason
+		}
+		response.FailWithData(c, 409, 40910, msg, data)
 	case errors.Is(err, service.ErrActivityNotFound), errors.Is(err, service.ErrActivityProductNotFound):
 		response.Fail(c, 404, 404, "活动不存在")
 	case errors.Is(err, service.ErrActivityNotActive):
@@ -723,8 +736,6 @@ func handleActivityError(c *gin.Context, err error) {
 		response.Fail(c, 404, 404, "商品不存在")
 	case errors.Is(err, service.ErrInvalidProductArg):
 		response.BadRequest(c, "活动商品参数无效：请确认 activity_price>0；开启拼团时须填写 group_buy_price（>0）和 group_buy_target_count（≥2）")
-	case errors.Is(err, service.ErrActivityProductDuplicate):
-		response.BadRequest(c, "该商品已在本活动中，请直接编辑")
 	default:
 		response.InternalError(c, "操作失败")
 	}

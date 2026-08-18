@@ -59,6 +59,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 	couponSvc := &service.CouponService{DB: db}
 	activitySvc := &service.ActivityService{DB: db}
 	announcementSvc := &service.AnnouncementService{DB: db}
+	homeCarouselSvc := &service.HomeCarouselService{DB: db}
 	payProvider, err := payment.NewProvider(cfg, db)
 	if err != nil {
 		panic("初始化支付渠道失败: " + err.Error())
@@ -154,6 +155,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 	announcementHandler := &handler.AnnouncementHandler{
 		AnnouncementSvc: announcementSvc, MerchantSvc: merchantSvc,
 	}
+	homeCarouselHandler := &handler.HomeCarouselHandler{Svc: homeCarouselSvc}
 	activityHandler := &handler.ActivityHandler{
 		ActivitySvc: activitySvc, MerchantSvc: merchantSvc,
 	}
@@ -181,6 +183,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 		public.GET("/products/:id", storeHandler.GetProduct)
 
 		public.GET("/announcements", announcementHandler.ListPublic)
+		public.GET("/home/carousel", homeCarouselHandler.ListPublic)
 		public.GET("/seckill/products", middleware.OptionalAuth(cfg.JWT.Secret, db), activityHandler.ListSeckillProducts)
 		public.GET("/rank/hot-groups", rankHandler.ListHotGroups)
 		public.GET("/rank/hot-sales", rankHandler.ListHotSales)
@@ -229,7 +232,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 
 		admin := authorized.Group("/admin")
 		admin.Use(middleware.RequireAccountTypes(model.AccountTypeAdmin))
-		registerAdminRoutes(admin, adminHandler, adminDashboardHandler, couponHandler, adminExtraHandler, announcementHandler, deliveryZoneHandler, activityHandler, fulfillmentEventHandler)
+		registerAdminRoutes(admin, adminHandler, adminDashboardHandler, couponHandler, adminExtraHandler, announcementHandler, deliveryZoneHandler, activityHandler, fulfillmentEventHandler, homeCarouselHandler)
 
 		rider := authorized.Group("/rider")
 		rider.Use(middleware.RequireRider())
@@ -450,7 +453,7 @@ func registerMerchantRoutes(r *gin.RouterGroup, h *handler.MerchantHandler, mo *
 	r.GET("/activities/:id/products/:activity_product_id", act.GetMerchantProduct)
 }
 
-func registerAdminRoutes(r *gin.RouterGroup, h *handler.AdminHandler, ad *handler.AdminDashboardHandler, ch *handler.CouponHandler, ae *handler.AdminExtraHandler, ah *handler.AnnouncementHandler, dz *handler.DeliveryZoneHandler, act *handler.ActivityHandler, fe *handler.FulfillmentEventHandler) {
+func registerAdminRoutes(r *gin.RouterGroup, h *handler.AdminHandler, ad *handler.AdminDashboardHandler, ch *handler.CouponHandler, ae *handler.AdminExtraHandler, ah *handler.AnnouncementHandler, dz *handler.DeliveryZoneHandler, act *handler.ActivityHandler, fe *handler.FulfillmentEventHandler, hc *handler.HomeCarouselHandler) {
 	r.POST("/merchants", h.CreateMerchant)
 	r.GET("/merchants", h.ListMerchants)
 	r.GET("/merchants/:id", h.GetMerchant)
@@ -543,6 +546,12 @@ func registerAdminRoutes(r *gin.RouterGroup, h *handler.AdminHandler, ad *handle
 	r.POST("/announcements", ah.CreateAdmin)
 	r.PATCH("/announcements/:id", ah.UpdateAdmin)
 	r.DELETE("/announcements/:id", ah.DeleteAdmin)
+
+	r.GET("/home-carousel", hc.ListAdmin)
+	r.POST("/home-carousel", hc.Create)
+	r.PUT("/home-carousel/reorder", hc.Reorder)
+	r.PATCH("/home-carousel/:id", hc.Update)
+	r.DELETE("/home-carousel/:id", hc.Delete)
 }
 
 func registerRiderRoutes(r *gin.RouterGroup, h *handler.RiderHandler) {
