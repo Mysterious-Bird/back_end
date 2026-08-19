@@ -230,6 +230,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 		user.POST("/bargain/sessions", bargainHandler.Start)
 		user.GET("/bargain/sessions", bargainHandler.ListMine)
 		user.POST("/bargain/sessions/:id/help", bargainHandler.Help)
+		user.POST("/bargain/sessions/:id/cancel", bargainHandler.Cancel)
 		registerUserRoutes(user, userHandler, couponHandler, paymentHandler, takeoutHandler, deliveryFeeHandler, fulfillmentEventHandler)
 
 		merchant := authorized.Group("/merchant")

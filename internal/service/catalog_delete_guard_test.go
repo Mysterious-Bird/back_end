@@ -28,6 +28,7 @@ func setupCatalogDeleteTestDB(t *testing.T) *gorm.DB {
 		&model.DeliveryOrder{},
 		&model.TakeoutOrder{},
 		&model.TakeoutOrderItem{},
+		&model.BargainSession{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -276,5 +277,78 @@ func TestActivityDelete_BlockedByPendingActivityOrder(t *testing.T) {
 	err := (&ActivityService{DB: db}).Delete(act.ID, nil)
 	if !errors.Is(err, ErrCatalogInUse) {
 		t.Fatalf("expected ErrCatalogInUse, got %v", err)
+	}
+}
+
+func seedBargainActivity(t *testing.T, db *gorm.DB) (*model.Activity, *model.ActivityProduct, *model.Product) {
+	t.Helper()
+	p := seedDeleteProduct(db, "砍价票")
+	now := time.Now()
+	act := model.Activity{
+		Name: "砍价场", StartAt: now.Add(-time.Hour), EndAt: now.Add(time.Hour), Status: model.ActivityStatusOn,
+	}
+	if err := db.Create(&act).Error; err != nil {
+		t.Fatal(err)
+	}
+	ap := model.ActivityProduct{ActivityID: act.ID, ProductID: p.ID, ActivityPrice: 29.9, Status: 1, EnableBargain: 1}
+	if err := db.Create(&ap).Error; err != nil {
+		t.Fatal(err)
+	}
+	return &act, &ap, p
+}
+
+func TestActivityProductRemove_BlockedByActiveBargain(t *testing.T) {
+	db := setupCatalogDeleteTestDB(t)
+	act, ap, p := seedBargainActivity(t, db)
+	sess := model.BargainSession{
+		ActivityID: act.ID, ActivityProductID: ap.ID, ProductID: p.ID, MerchantID: 1,
+		InitiatorAccountID: 8, OriginPrice: 29.9, FloorPrice: 9.9, CurrentPrice: 20,
+		Status: model.BargainStatusOngoing, ExpireAt: time.Now().Add(time.Hour),
+	}
+	if err := db.Create(&sess).Error; err != nil {
+		t.Fatal(err)
+	}
+	err := (&ActivityService{DB: db}).RemoveProductInActivity(act.ID, ap.ID, nil)
+	if !errors.Is(err, ErrCatalogInUse) {
+		t.Fatalf("expected ErrCatalogInUse, got %v", err)
+	}
+	if msg := CatalogInUseMessage(err); msg != "有用户正在砍价中，无法删除" {
+		t.Fatalf("message=%q", msg)
+	}
+}
+
+func TestActivityProductRemove_AllowsWhenBargainExpired(t *testing.T) {
+	db := setupCatalogDeleteTestDB(t)
+	act, ap, p := seedBargainActivity(t, db)
+	sess := model.BargainSession{
+		ActivityID: act.ID, ActivityProductID: ap.ID, ProductID: p.ID, MerchantID: 1,
+		InitiatorAccountID: 8, OriginPrice: 29.9, FloorPrice: 9.9, CurrentPrice: 20,
+		Status: model.BargainStatusOngoing, ExpireAt: time.Now().Add(-time.Minute),
+	}
+	if err := db.Create(&sess).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := (&ActivityService{DB: db}).RemoveProductInActivity(act.ID, ap.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestActivityDelete_BlockedByActiveBargain(t *testing.T) {
+	db := setupCatalogDeleteTestDB(t)
+	act, ap, p := seedBargainActivity(t, db)
+	sess := model.BargainSession{
+		ActivityID: act.ID, ActivityProductID: ap.ID, ProductID: p.ID, MerchantID: 1,
+		InitiatorAccountID: 8, OriginPrice: 29.9, FloorPrice: 9.9, CurrentPrice: 20,
+		Status: model.BargainStatusOngoing, ExpireAt: time.Now().Add(time.Hour),
+	}
+	if err := db.Create(&sess).Error; err != nil {
+		t.Fatal(err)
+	}
+	err := (&ActivityService{DB: db}).Delete(act.ID, nil)
+	if !errors.Is(err, ErrCatalogInUse) {
+		t.Fatalf("expected ErrCatalogInUse, got %v", err)
+	}
+	if msg := CatalogInUseMessage(err); msg != "有用户正在砍价中，无法删除" {
+		t.Fatalf("message=%q", msg)
 	}
 }

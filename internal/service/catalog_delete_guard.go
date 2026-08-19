@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"yujixinjiang/backend/internal/model"
 	"yujixinjiang/backend/internal/query"
@@ -153,6 +154,10 @@ func assertActivityScopedDeletable(db *gorm.DB, productID uint64, apID, activity
 		itemArg = *activityID
 	}
 
+	if err := assertNoActiveBargain(db, apID, activityID); err != nil {
+		return err
+	}
+
 	bagQ := db.Table("user_inventory i").
 		Joins("JOIN `order` o ON o.account_id = i.account_id AND o.is_deleted = ?", model.NotDeleted).
 		Joins("JOIN order_item oi ON oi.order_id = o.id AND oi.is_deleted = ? AND oi.product_id = i.product_id AND "+itemMatch("oi"), model.NotDeleted, itemArg).
@@ -188,6 +193,29 @@ func assertActivityScopedDeletable(db *gorm.DB, productID uint64, apID, activity
 		return err
 	} else if n > 0 {
 		return catalogInUse("order", "有未完成的订单，无法删除")
+	}
+	return nil
+}
+
+// assertNoActiveBargain 删除活动/活动商品前：存在未过期的进行中砍价则禁止。
+func assertNoActiveBargain(db *gorm.DB, apID, activityID *uint64) error {
+	if db == nil {
+		return nil
+	}
+	q := query.NotDeleted(db.Model(&model.BargainSession{})).
+		Where("status = ? AND expire_at > ?", model.BargainStatusOngoing, time.Now())
+	switch {
+	case apID != nil && *apID > 0:
+		q = q.Where("activity_product_id = ?", *apID)
+	case activityID != nil && *activityID > 0:
+		q = q.Where("activity_id = ?", *activityID)
+	default:
+		return nil
+	}
+	if n, err := existsCount(q); err != nil {
+		return err
+	} else if n > 0 {
+		return catalogInUse("bargain", "有用户正在砍价中，无法删除")
 	}
 	return nil
 }

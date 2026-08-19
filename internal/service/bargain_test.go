@@ -59,7 +59,9 @@ func seedBargainAP(t *testing.T, db *gorm.DB) (*model.Activity, *model.ActivityP
 		ActivityID: act.ID, ProductID: p.ID, ActivityPrice: 29.9, ActivityStock: 100,
 		Status: 1, EnableBargain: 1, BargainFloorPrice: &floor,
 		BargainDurationHours: 24, BargainNewUserHours: 48, BargainHelpDailyMax: 20,
-		BargainSelfCutMax: 1.0, BargainNewMin: 1, BargainNewMax: 5,
+		EnableBargainSelfCut: 1, BargainSelfCutMode: model.BargainCutModeRandom,
+		BargainSelfCutMin: 0.1, BargainSelfCutMax: 1.0,
+		BargainNewMin: 1, BargainNewMax: 5,
 		BargainOldMin: 0.1, BargainOldMax: 1,
 	}
 	if err := db.Create(&ap).Error; err != nil {
@@ -108,15 +110,118 @@ func TestBargainStart_SelfCutOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.SelfCutDone != 1 {
-		t.Fatal("expected self cut")
+	if view.SelfCutDone != 0 {
+		t.Fatal("should not auto self cut on start")
 	}
-	if view.CurrentPrice >= view.OriginPrice {
-		t.Fatalf("price should drop after self cut: %v >= %v", view.CurrentPrice, view.OriginPrice)
+	if view.CurrentPrice != view.OriginPrice {
+		t.Fatalf("price should stay origin before manual self cut: got %v want %v", view.CurrentPrice, view.OriginPrice)
 	}
-	cut := roundMoney(view.OriginPrice - view.CurrentPrice)
+	after, err := svc.Help(view.ID, acc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.SelfCutDone != 1 {
+		t.Fatal("expected self cut after manual help")
+	}
+	if after.CurrentPrice >= after.OriginPrice {
+		t.Fatalf("price should drop after self cut: %v >= %v", after.CurrentPrice, after.OriginPrice)
+	}
+	cut := roundMoney(after.OriginPrice - after.CurrentPrice)
 	if cut > ap.BargainSelfCutMax+1e-9 {
 		t.Fatalf("self cut %v exceeds max %v", cut, ap.BargainSelfCutMax)
+	}
+}
+
+func TestBargainSelfCut_ConsumesDailyLimit(t *testing.T) {
+	db := setupBargainTestDB(t)
+	if err := db.Model(&model.BargainSettings{}).Where("id = 1").Update("help_daily_max", 1).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, ap, _ := seedBargainAP(t, db)
+	acc := model.Account{CreatedAt: time.Now().Add(-72 * time.Hour)}
+	if err := db.Create(&acc).Error; err != nil {
+		t.Fatal(err)
+	}
+	svc := &BargainService{DB: db}
+	view, err := svc.StartSession(acc.ID, ap.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Help(view.ID, acc.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CancelSession(acc.ID, view.ID); err != nil {
+		t.Fatal(err)
+	}
+	view2, err := svc.StartSession(acc.ID, ap.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Help(view2.ID, acc.ID); !errors.Is(err, ErrBargainDailyLimit) {
+		t.Fatalf("expected ErrBargainDailyLimit on second self cut, got %v", err)
+	}
+}
+
+func TestBargainStart_SelfCutDisabledByDefault(t *testing.T) {
+	db := setupBargainTestDB(t)
+	_, ap, _ := seedBargainAP(t, db)
+	ap.EnableBargainSelfCut = 0
+	if err := db.Save(ap).Error; err != nil {
+		t.Fatal(err)
+	}
+	acc := model.Account{CreatedAt: time.Now().Add(-72 * time.Hour)}
+	if err := db.Create(&acc).Error; err != nil {
+		t.Fatal(err)
+	}
+	svc := &BargainService{DB: db}
+	view, err := svc.StartSession(acc.ID, ap.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.SelfCutDone != 0 {
+		t.Fatal("self cut should be skipped when disabled")
+	}
+	if view.CurrentPrice != view.OriginPrice {
+		t.Fatalf("price should stay origin: got %v want %v", view.CurrentPrice, view.OriginPrice)
+	}
+	if _, err := svc.Help(view.ID, acc.ID); !errors.Is(err, ErrBargainSelfCutDisabled) {
+		t.Fatalf("expected ErrBargainSelfCutDisabled, got %v", err)
+	}
+}
+
+func TestBargainStart_LimitExceeded(t *testing.T) {
+	db := setupBargainTestDB(t)
+	if err := db.AutoMigrate(&model.Order{}, &model.OrderItem{}); err != nil {
+		t.Fatal(err)
+	}
+	_, ap, _ := seedBargainAP(t, db)
+	ap.PerUserMaxQty = 1
+	if err := db.Save(ap).Error; err != nil {
+		t.Fatal(err)
+	}
+	acc := model.Account{CreatedAt: time.Now().Add(-72 * time.Hour)}
+	if err := db.Create(&acc).Error; err != nil {
+		t.Fatal(err)
+	}
+	actID := ap.ActivityID
+	apID := ap.ID
+	order := model.Order{
+		OrderNo: "B-LIMIT-1", AccountID: acc.ID, MerchantID: 1,
+		Status: model.OrderStatusCompleted, DeliveryType: 1,
+	}
+	if err := db.Create(&order).Error; err != nil {
+		t.Fatal(err)
+	}
+	item := model.OrderItem{
+		OrderID: order.ID, ProductID: ap.ProductID, ActivityID: &actID, ActivityProductID: &apID,
+		ProductName: "砍价品", Quantity: 1, UnitPrice: 29.9, Subtotal: 29.9,
+	}
+	if err := db.Create(&item).Error; err != nil {
+		t.Fatal(err)
+	}
+	svc := &BargainService{DB: db}
+	if _, err := svc.StartSession(acc.ID, ap.ID); !errors.Is(err, ErrActivityLimitExceeded) {
+		t.Fatalf("expected ErrActivityLimitExceeded, got %v", err)
 	}
 }
 
@@ -169,6 +274,69 @@ func TestBargainHelp_ExpiredRejected(t *testing.T) {
 	}
 }
 
+func TestBargainCancel_FreesSlotForRestart(t *testing.T) {
+	db := setupBargainTestDB(t)
+	_, ap, _ := seedBargainAP(t, db)
+	ap.EnableBargainSelfCut = 0
+	if err := db.Save(ap).Error; err != nil {
+		t.Fatal(err)
+	}
+	acc := model.Account{CreatedAt: time.Now().Add(-72 * time.Hour)}
+	if err := db.Create(&acc).Error; err != nil {
+		t.Fatal(err)
+	}
+	svc := &BargainService{DB: db}
+	view, err := svc.StartSession(acc.ID, ap.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, err := svc.CancelSession(acc.ID, view.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.Status != model.BargainStatusCancelled {
+		t.Fatalf("status=%d want cancelled", cancelled.Status)
+	}
+	if cancelled.CanCancel || cancelled.CanBuy {
+		t.Fatal("cancelled session should not allow buy/cancel")
+	}
+	again, err := svc.StartSession(acc.ID, ap.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID == view.ID {
+		t.Fatal("should start a new session after cancel")
+	}
+	if again.Status != model.BargainStatusOngoing {
+		t.Fatalf("status=%d", again.Status)
+	}
+}
+
+func TestBargainCancel_ForbiddenForNonInitiator(t *testing.T) {
+	db := setupBargainTestDB(t)
+	_, ap, _ := seedBargainAP(t, db)
+	ap.EnableBargainSelfCut = 0
+	if err := db.Save(ap).Error; err != nil {
+		t.Fatal(err)
+	}
+	init := model.Account{CreatedAt: time.Now().Add(-72 * time.Hour)}
+	other := model.Account{CreatedAt: time.Now().Add(-72 * time.Hour)}
+	if err := db.Create(&init).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	svc := &BargainService{DB: db}
+	view, err := svc.StartSession(init.ID, ap.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CancelSession(other.ID, view.ID); !errors.Is(err, ErrBargainForbidden) {
+		t.Fatalf("expected ErrBargainForbidden, got %v", err)
+	}
+}
+
 func TestAssertSessionBuyable(t *testing.T) {
 	sess := &model.BargainSession{
 		InitiatorAccountID: 9,
@@ -193,7 +361,7 @@ func TestValidateBargainConfig(t *testing.T) {
 	in := ActivityProductInput{
 		ProductID: 1, ActivityPrice: 10, EnableBargain: 1, BargainFloorPrice: &floor,
 		BargainNewMin: 1, BargainNewMax: 2, BargainOldMin: 0.1, BargainOldMax: 1,
-		BargainSelfCutMax: 1, BargainDurationHours: 24,
+		BargainDurationHours: 24,
 	}
 	if err := validateBargainOnActivityProduct(in); err != nil {
 		t.Fatal(err)

@@ -16,14 +16,15 @@ import (
 )
 
 var (
-	ErrBargainNotFound      = errors.New("bargain session not found")
-	ErrBargainNotEnabled    = errors.New("bargain not enabled")
-	ErrBargainAlreadyHelped = errors.New("already helped this bargain")
-	ErrBargainExpired       = errors.New("bargain expired")
-	ErrBargainForbidden     = errors.New("bargain forbidden")
-	ErrBargainDailyLimit    = errors.New("bargain daily help limit")
-	ErrBargainNoRemain      = errors.New("bargain already at floor")
-	ErrBargainConflict      = errors.New("bargain session conflict")
+	ErrBargainNotFound         = errors.New("bargain session not found")
+	ErrBargainNotEnabled       = errors.New("bargain not enabled")
+	ErrBargainAlreadyHelped    = errors.New("already helped this bargain")
+	ErrBargainExpired          = errors.New("bargain expired")
+	ErrBargainForbidden        = errors.New("bargain forbidden")
+	ErrBargainDailyLimit       = errors.New("bargain daily help limit")
+	ErrBargainNoRemain         = errors.New("bargain already at floor")
+	ErrBargainConflict         = errors.New("bargain session conflict")
+	ErrBargainSelfCutDisabled  = errors.New("bargain self cut disabled")
 )
 
 type BargainService struct {
@@ -45,6 +46,8 @@ type BargainSessionView struct {
 	ProductCover  string            `json:"product_cover"`
 	CanBuy        bool              `json:"can_buy"`
 	CanHelp       bool              `json:"can_help"`
+	CanSelfCut    bool              `json:"can_self_cut"`
+	CanCancel     bool              `json:"can_cancel"`
 	IsInitiator   bool              `json:"is_initiator"`
 	AlreadyHelped bool              `json:"already_helped"`
 	GuideText     string            `json:"guide_text"`
@@ -147,6 +150,18 @@ func validateBargainOnActivityProduct(input ActivityProductInput) error {
 	if err := validateBargainCutMode(input.BargainOldCutMode, "bargain_old"); err != nil {
 		return err
 	}
+	if input.EnableBargainSelfCut == 1 {
+		if err := validateBargainCutMode(input.BargainSelfCutMode, "bargain_self"); err != nil {
+			return err
+		}
+		if input.BargainSelfCutMode == model.BargainCutModeFixed {
+			if input.BargainSelfCutMin <= 0 {
+				return fmt.Errorf("%w: bargain_self 固定金额无效", ErrInvalidProductArg)
+			}
+		} else if input.BargainSelfCutMin < 0 || input.BargainSelfCutMax < input.BargainSelfCutMin {
+			return fmt.Errorf("%w: bargain_self 区间无效", ErrInvalidProductArg)
+		}
+	}
 	if input.BargainNewCutMode == model.BargainCutModeFixed {
 		if input.BargainNewMin <= 0 {
 			return fmt.Errorf("%w: bargain_new 固定金额无效", ErrInvalidProductArg)
@@ -160,9 +175,6 @@ func validateBargainOnActivityProduct(input ActivityProductInput) error {
 		}
 	} else if input.BargainOldMin < 0 || input.BargainOldMax < input.BargainOldMin {
 		return fmt.Errorf("%w: bargain_old 区间无效", ErrInvalidProductArg)
-	}
-	if input.BargainSelfCutMax <= 0 {
-		return fmt.Errorf("%w: bargain_self_cut_max", ErrInvalidProductArg)
 	}
 	return nil
 }
@@ -187,8 +199,20 @@ func normalizeBargainInput(input ActivityProductInput) ActivityProductInput {
 	if input.BargainHelpDailyMax == 0 {
 		input.BargainHelpDailyMax = 20
 	}
-	if input.BargainSelfCutMax <= 0 {
-		input.BargainSelfCutMax = 1
+	if input.EnableBargainSelfCut != 1 {
+		input.EnableBargainSelfCut = 0
+	} else {
+		if input.BargainSelfCutMode != model.BargainCutModeFixed {
+			input.BargainSelfCutMode = model.BargainCutModeRandom
+		}
+		if input.BargainSelfCutMode == model.BargainCutModeFixed {
+			if input.BargainSelfCutMin <= 0 {
+				input.BargainSelfCutMin = 1
+			}
+			input.BargainSelfCutMax = input.BargainSelfCutMin
+		} else if input.BargainSelfCutMax <= 0 {
+			input.BargainSelfCutMin, input.BargainSelfCutMax = 0.1, 1
+		}
 	}
 	if input.BargainNewCutMode != model.BargainCutModeFixed {
 		input.BargainNewCutMode = model.BargainCutModeRandom
@@ -272,6 +296,11 @@ func (s *BargainService) StartSession(accountID, activityProductID uint64) (*Bar
 			return err
 		}
 
+		actSvc := &ActivityService{DB: tx}
+		if err := actSvc.checkUserLimits(tx, accountID, ap, 1); err != nil {
+			return err
+		}
+
 		hours := ap.BargainDurationHours
 		if hours == 0 {
 			hours = 24
@@ -291,40 +320,6 @@ func (s *BargainService) StartSession(accountID, activityProductID uint64) (*Bar
 		}
 		if err := tx.Create(&sess).Error; err != nil {
 			return err
-		}
-		remain := roundBargainMoney(sess.CurrentPrice - sess.FloorPrice)
-		cut := resolveCutAmount(
-			remain,
-			ap.BargainOldCutMode,
-			ap.BargainOldMin,
-			ap.BargainOldMax,
-			rand.New(rand.NewSource(now.UnixNano()^int64(accountID))),
-		)
-		if cut > ap.BargainSelfCutMax {
-			cut = ap.BargainSelfCutMax
-		}
-		cut = roundBargainMoney(cut)
-		if cut > remain {
-			cut = remain
-		}
-		if cut > 0 {
-			help := model.BargainHelp{
-				SessionID:       sess.ID,
-				HelperAccountID: accountID,
-				CutAmount:       cut,
-				IsNewUser:       0,
-			}
-			if err := tx.Create(&help).Error; err != nil {
-				return err
-			}
-			sess.CurrentPrice = roundBargainMoney(sess.CurrentPrice - cut)
-			sess.SelfCutDone = 1
-			if err := tx.Model(&sess).Updates(map[string]interface{}{
-				"current_price": sess.CurrentPrice,
-				"self_cut_done": 1,
-			}).Error; err != nil {
-				return err
-			}
 		}
 		view, vErr := s.buildView(tx, &sess, product, &accountID)
 		if vErr != nil {
@@ -375,40 +370,42 @@ func (s *BargainService) Help(sessionID, helperAccountID uint64) (*BargainSessio
 		isNew := helper.CreatedAt.After(now.Add(-time.Duration(newHours) * time.Hour))
 		isSelf := helperAccountID == sess.InitiatorAccountID
 		if isSelf {
+			if ap.EnableBargainSelfCut != 1 {
+				return ErrBargainSelfCutDisabled
+			}
 			if sess.SelfCutDone == 1 {
 				return ErrBargainAlreadyHelped
 			}
-		} else {
-			settings, sErr := s.getSettingsTx(tx)
-			if sErr != nil {
-				return sErr
-			}
-			windowStart, _ := calendarWindowAt(now, "day", settings.HelpDailyRefreshTime)
-			var dayCount int64
-			if err := tx.Model(&model.BargainHelp{}).
-				Where("helper_account_id = ? AND created_at >= ?", helperAccountID, windowStart).
-				Count(&dayCount).Error; err != nil {
-				return err
-			}
-			maxDaily := settings.HelpDailyMax
-			if maxDaily == 0 {
-				maxDaily = 20
-			}
-			if uint32(dayCount) >= maxDaily {
-				return ErrBargainDailyLimit
-			}
+		}
+		settings, sErr := s.getSettingsTx(tx)
+		if sErr != nil {
+			return sErr
+		}
+		windowStart, _ := calendarWindowAt(now, "day", settings.HelpDailyRefreshTime)
+		var dayCount int64
+		if err := tx.Model(&model.BargainHelp{}).
+			Where("helper_account_id = ? AND created_at >= ?", helperAccountID, windowStart).
+			Count(&dayCount).Error; err != nil {
+			return err
+		}
+		maxDaily := settings.HelpDailyMax
+		if maxDaily == 0 {
+			maxDaily = 20
+		}
+		if uint32(dayCount) >= maxDaily {
+			return ErrBargainDailyLimit
 		}
 
 		mode := ap.BargainOldCutMode
 		min, max := ap.BargainOldMin, ap.BargainOldMax
-		if isNew && !isSelf {
+		if isSelf {
+			mode = ap.BargainSelfCutMode
+			min, max = ap.BargainSelfCutMin, ap.BargainSelfCutMax
+		} else if isNew {
 			mode = ap.BargainNewCutMode
 			min, max = ap.BargainNewMin, ap.BargainNewMax
 		}
 		cut := resolveCutAmount(remain, mode, min, max, rand.New(rand.NewSource(now.UnixNano()^int64(helperAccountID)^int64(sessionID))))
-		if isSelf && cut > ap.BargainSelfCutMax {
-			cut = ap.BargainSelfCutMax
-		}
 		cut = roundBargainMoney(cut)
 		if cut > remain {
 			cut = remain
@@ -621,16 +618,29 @@ func (s *BargainService) buildView(tx *gorm.DB, sess *model.BargainSession, prod
 	isInit := viewer != nil && *viewer == sess.InitiatorAccountID
 	canBuy := false
 	canHelp := false
+	canSelfCut := false
+	canCancel := false
 	now := time.Now()
+	var selfCutFlag uint8
+	if err := tx.Model(&model.ActivityProduct{}).
+		Select("enable_bargain_self_cut").
+		Where("id = ? AND is_deleted = ?", sess.ActivityProductID, model.NotDeleted).
+		Scan(&selfCutFlag).Error; err != nil {
+		return nil, err
+	}
+	enableSelfCut := selfCutFlag == 1
 	if sess.Status == model.BargainStatusOngoing && !now.After(sess.ExpireAt) {
 		if isInit {
 			canBuy = true
+			canCancel = true
 		}
-		if viewer != nil && !already {
-			if *viewer != sess.InitiatorAccountID || sess.SelfCutDone == 0 {
-				if roundBargainMoney(sess.CurrentPrice-sess.FloorPrice) > 0 {
-					canHelp = true
-				}
+		remainOk := roundBargainMoney(sess.CurrentPrice-sess.FloorPrice) > 0
+		if viewer != nil && remainOk {
+			if isInit && enableSelfCut && sess.SelfCutDone == 0 {
+				canSelfCut = true
+			}
+			if !isInit && !already {
+				canHelp = true
 			}
 		}
 	}
@@ -650,11 +660,66 @@ func (s *BargainService) buildView(tx *gorm.DB, sess *model.BargainSession, prod
 		ProductCover:   cover,
 		CanBuy:         canBuy,
 		CanHelp:        canHelp,
+		CanSelfCut:     canSelfCut,
+		CanCancel:      canCancel,
 		IsInitiator:    isInit,
 		AlreadyHelped:  already,
 		GuideText:      guide,
 		Helps:          hv,
 	}, nil
+}
+
+// CancelSession 发起人主动放弃进行中的砍价；释放再次发起机会，但已发生的帮砍次数不回退。
+func (s *BargainService) CancelSession(accountID, sessionID uint64) (*BargainSessionView, error) {
+	now := time.Now()
+	var out *BargainSessionView
+	err := s.DB.Transaction(func(tx *gorm.DB) error {
+		var sess model.BargainSession
+		if err := query.NotDeleted(tx).Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&sess, sessionID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrBargainNotFound
+			}
+			return err
+		}
+		if sess.InitiatorAccountID != accountID {
+			return ErrBargainForbidden
+		}
+		if err := s.expireIfNeeded(tx, &sess, now); err != nil {
+			return err
+		}
+		if sess.Status == model.BargainStatusCancelled {
+			var product model.Product
+			_ = query.NotDeleted(tx).First(&product, sess.ProductID)
+			view, vErr := s.buildView(tx, &sess, &product, &accountID)
+			if vErr != nil {
+				return vErr
+			}
+			out = view
+			return nil
+		}
+		if sess.Status == model.BargainStatusOrdered {
+			return fmt.Errorf("%w: 已下单不可放弃", ErrBargainConflict)
+		}
+		if sess.Status != model.BargainStatusOngoing || now.After(sess.ExpireAt) {
+			return ErrBargainExpired
+		}
+		sess.Status = model.BargainStatusCancelled
+		if err := tx.Model(&sess).Update("status", model.BargainStatusCancelled).Error; err != nil {
+			return err
+		}
+		var product model.Product
+		if err := query.NotDeleted(tx).First(&product, sess.ProductID).Error; err != nil {
+			return err
+		}
+		view, vErr := s.buildView(tx, &sess, &product, &accountID)
+		if vErr != nil {
+			return vErr
+		}
+		out = view
+		return nil
+	})
+	return out, err
 }
 
 func markBargainSessionOrdered(tx *gorm.DB, sessionID, orderID uint64) error {

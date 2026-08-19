@@ -76,6 +76,25 @@ func (h *BargainHandler) Help(c *gin.Context) {
 	response.OK(c, view)
 }
 
+func (h *BargainHandler) Cancel(c *gin.Context) {
+	accountID, ok := auth.AccountID(c)
+	if !ok {
+		response.Fail(c, 401, 401, "未登录")
+		return
+	}
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		response.BadRequest(c, "ID 无效")
+		return
+	}
+	view, err := h.BargainSvc.CancelSession(accountID, id)
+	if err != nil {
+		handleBargainError(c, err)
+		return
+	}
+	response.OK(c, view)
+}
+
 func (h *BargainHandler) ListMine(c *gin.Context) {
 	accountID, ok := auth.AccountID(c)
 	if !ok {
@@ -152,12 +171,18 @@ func handleBargainError(c *gin.Context, err error) {
 		response.BadRequest(c, "今日帮砍次数已达上限")
 	case errors.Is(err, service.ErrBargainNoRemain):
 		response.BadRequest(c, "已砍到底价")
+	case errors.Is(err, service.ErrBargainSelfCutDisabled):
+		response.BadRequest(c, "该商品未开启发起人自砍")
 	case errors.Is(err, service.ErrBargainConflict):
 		response.BadRequest(c, "砍价状态冲突")
 	case errors.Is(err, service.ErrActivityNotFound), errors.Is(err, service.ErrActivityProductNotFound):
 		response.Fail(c, 404, 404, "活动商品不存在")
 	case errors.Is(err, service.ErrActivityNotActive):
 		response.BadRequest(c, "活动未开始或已结束")
+	case errors.Is(err, service.ErrActivityLimitExceeded):
+		response.BadRequest(c, "已达限购，无法发起砍价")
+	case errors.Is(err, service.ErrActivityRegisterWindow):
+		response.BadRequest(c, "不在新用户专享窗口内")
 	case errors.Is(err, service.ErrInvalidProductArg):
 		response.BadRequest(c, err.Error())
 	default:

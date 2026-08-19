@@ -60,6 +60,9 @@ type ActivityProduct struct {
 	BargainDurationHours       uint32    `gorm:"not null;default:24" json:"bargain_duration_hours"`
 	BargainNewUserHours        uint32    `gorm:"not null;default:48" json:"bargain_new_user_hours"`
 	BargainHelpDailyMax        uint32    `gorm:"not null;default:20" json:"bargain_help_daily_max"`
+	EnableBargainSelfCut       uint8     `gorm:"not null;default:0" json:"enable_bargain_self_cut"` // 1=允许发起人自砍
+	BargainSelfCutMode         uint8     `gorm:"not null;default:1" json:"bargain_self_cut_mode"`   // 1随机 2固定
+	BargainSelfCutMin          float64   `gorm:"type:decimal(10,2);not null;default:0.1" json:"bargain_self_cut_min"`
 	BargainSelfCutMax          float64   `gorm:"type:decimal(10,2);not null;default:1" json:"bargain_self_cut_max"`
 	BargainNewCutMode          uint8     `gorm:"not null;default:1" json:"bargain_new_cut_mode"` // 1随机 2固定
 	BargainNewMin              float64   `gorm:"type:decimal(10,2);not null;default:1" json:"bargain_new_min"`
