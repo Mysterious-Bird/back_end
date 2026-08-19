@@ -55,6 +55,16 @@ type ActivityProduct struct {
 	PlatformDailySold       uint32    `gorm:"not null;default:0" json:"platform_daily_sold"`
 	PlatformDailyBucket     string    `gorm:"size:32;not null;default:''" json:"platform_daily_bucket"`
 	EnableGroupBuy          uint8     `gorm:"not null;default:0" json:"enable_group_buy"`
+	EnableBargain           uint8     `gorm:"not null;default:0" json:"enable_bargain"` // 1=砍价商品（与拼团互斥）
+	BargainFloorPrice       *float64  `gorm:"type:decimal(10,2)" json:"bargain_floor_price,omitempty"`
+	BargainDurationHours    uint32    `gorm:"not null;default:24" json:"bargain_duration_hours"`
+	BargainNewUserHours     uint32    `gorm:"not null;default:48" json:"bargain_new_user_hours"`
+	BargainHelpDailyMax     uint32    `gorm:"not null;default:20" json:"bargain_help_daily_max"`
+	BargainSelfCutMax       float64   `gorm:"type:decimal(10,2);not null;default:1" json:"bargain_self_cut_max"`
+	BargainNewMin           float64   `gorm:"type:decimal(10,2);not null;default:1" json:"bargain_new_min"`
+	BargainNewMax           float64   `gorm:"type:decimal(10,2);not null;default:5" json:"bargain_new_max"`
+	BargainOldMin           float64   `gorm:"type:decimal(10,2);not null;default:0.1" json:"bargain_old_min"`
+	BargainOldMax           float64   `gorm:"type:decimal(10,2);not null;default:1" json:"bargain_old_max"`
 	GroupBuyPrice           *float64  `gorm:"type:decimal(10,2)" json:"group_buy_price,omitempty"`
 	GroupBuyTargetCount     *uint32   `json:"group_buy_target_count,omitempty"`
 	GroupBuyAllowRepeat     uint8     `gorm:"not null;default:0" json:"group_buy_allow_repeat"`
