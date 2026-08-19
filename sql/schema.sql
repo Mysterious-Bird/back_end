@@ -396,6 +396,14 @@ CREATE TABLE IF NOT EXISTS `bargain_help` (
   KEY `idx_bargain_help_helper_day` (`helper_account_id`, `created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='砍价帮砍记录';
 
+CREATE TABLE IF NOT EXISTS `bargain_settings` (
+  `id` TINYINT UNSIGNED NOT NULL,
+  `help_daily_max` INT UNSIGNED NOT NULL DEFAULT 20 COMMENT '每账号每个刷新周期内帮砍上限',
+  `help_daily_refresh_time` TIME NOT NULL DEFAULT '00:00:00' COMMENT '帮砍次数刷新时刻',
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='砍价全局设置';
+
 -- -----------------------------------------------------------------------------
 -- coupon / user_coupon 优惠券
 -- -----------------------------------------------------------------------------

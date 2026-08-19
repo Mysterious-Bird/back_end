@@ -26,8 +26,14 @@ func setupBargainTestDB(t *testing.T) *gorm.DB {
 		&model.ActivityProduct{},
 		&model.BargainSession{},
 		&model.BargainHelp{},
+		&model.BargainSettings{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
+	}
+	if err := db.Create(&model.BargainSettings{
+		ID: 1, HelpDailyMax: 20, HelpDailyRefreshTime: "00:00:00",
+	}).Error; err != nil {
+		t.Fatalf("seed settings: %v", err)
 	}
 	return db
 }

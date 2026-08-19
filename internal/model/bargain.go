@@ -11,21 +11,21 @@ const (
 
 // BargainSession 砍价会话（发起人分享拉人砍价）。
 type BargainSession struct {
-	ID                  uint64    `gorm:"primaryKey" json:"id"`
-	ActivityID          uint64    `gorm:"not null;index" json:"activity_id"`
-	ActivityProductID   uint64    `gorm:"not null;index" json:"activity_product_id"`
-	ProductID           uint64    `gorm:"not null" json:"product_id"`
-	MerchantID          uint64    `gorm:"not null" json:"merchant_id"`
-	InitiatorAccountID  uint64    `gorm:"not null;index" json:"initiator_account_id"`
-	OriginPrice         float64   `gorm:"type:decimal(10,2);not null" json:"origin_price"`
-	FloorPrice          float64   `gorm:"type:decimal(10,2);not null" json:"floor_price"`
-	CurrentPrice        float64   `gorm:"type:decimal(10,2);not null" json:"current_price"`
-	Status              uint8     `gorm:"not null;default:1" json:"status"`
-	SelfCutDone         uint8     `gorm:"not null;default:0" json:"self_cut_done"`
-	ExpireAt            time.Time `gorm:"not null" json:"expire_at"`
-	OrderID             *uint64   `json:"order_id,omitempty"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	ID                 uint64    `gorm:"primaryKey" json:"id"`
+	ActivityID         uint64    `gorm:"not null;index" json:"activity_id"`
+	ActivityProductID  uint64    `gorm:"not null;index" json:"activity_product_id"`
+	ProductID          uint64    `gorm:"not null" json:"product_id"`
+	MerchantID         uint64    `gorm:"not null" json:"merchant_id"`
+	InitiatorAccountID uint64    `gorm:"not null;index" json:"initiator_account_id"`
+	OriginPrice        float64   `gorm:"type:decimal(10,2);not null" json:"origin_price"`
+	FloorPrice         float64   `gorm:"type:decimal(10,2);not null" json:"floor_price"`
+	CurrentPrice       float64   `gorm:"type:decimal(10,2);not null" json:"current_price"`
+	Status             uint8     `gorm:"not null;default:1" json:"status"`
+	SelfCutDone        uint8     `gorm:"not null;default:0" json:"self_cut_done"`
+	ExpireAt           time.Time `gorm:"not null" json:"expire_at"`
+	OrderID            *uint64   `json:"order_id,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 	SoftDelete
 }
 
@@ -42,3 +42,13 @@ type BargainHelp struct {
 }
 
 func (BargainHelp) TableName() string { return "bargain_help" }
+
+// BargainSettings 砍价全局配置（单行 id=1）。
+type BargainSettings struct {
+	ID                   uint8     `gorm:"primaryKey" json:"id"`
+	HelpDailyMax         uint32    `gorm:"not null;default:20" json:"help_daily_max"`
+	HelpDailyRefreshTime string    `gorm:"type:time;not null;default:00:00:00" json:"help_daily_refresh_time"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
+func (BargainSettings) TableName() string { return "bargain_settings" }

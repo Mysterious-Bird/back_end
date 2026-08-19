@@ -237,6 +237,8 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 
 		admin := authorized.Group("/admin")
 		admin.Use(middleware.RequireAccountTypes(model.AccountTypeAdmin))
+		admin.GET("/bargain-settings", bargainHandler.GetSettings)
+		admin.PATCH("/bargain-settings", bargainHandler.UpdateSettings)
 		registerAdminRoutes(admin, adminHandler, adminDashboardHandler, couponHandler, adminExtraHandler, announcementHandler, deliveryZoneHandler, activityHandler, fulfillmentEventHandler, homeCarouselHandler)
 
 		rider := authorized.Group("/rider")

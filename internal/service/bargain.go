@@ -313,21 +313,25 @@ func (s *BargainService) Help(sessionID, helperAccountID uint64) (*BargainSessio
 			if sess.SelfCutDone == 1 {
 				return ErrBargainAlreadyHelped
 			}
-		}
-
-		dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-		var dayCount int64
-		if err := tx.Model(&model.BargainHelp{}).
-			Where("helper_account_id = ? AND created_at >= ?", helperAccountID, dayStart).
-			Count(&dayCount).Error; err != nil {
-			return err
-		}
-		maxDaily := ap.BargainHelpDailyMax
-		if maxDaily == 0 {
-			maxDaily = 20
-		}
-		if uint32(dayCount) >= maxDaily {
-			return ErrBargainDailyLimit
+		} else {
+			settings, sErr := s.getSettingsTx(tx)
+			if sErr != nil {
+				return sErr
+			}
+			windowStart, _ := calendarWindowAt(now, "day", settings.HelpDailyRefreshTime)
+			var dayCount int64
+			if err := tx.Model(&model.BargainHelp{}).
+				Where("helper_account_id = ? AND created_at >= ?", helperAccountID, windowStart).
+				Count(&dayCount).Error; err != nil {
+				return err
+			}
+			maxDaily := settings.HelpDailyMax
+			if maxDaily == 0 {
+				maxDaily = 20
+			}
+			if uint32(dayCount) >= maxDaily {
+				return ErrBargainDailyLimit
+			}
 		}
 
 		min, max := ap.BargainOldMin, ap.BargainOldMax
@@ -530,4 +534,71 @@ func restoreBargainSessionIfUnpaid(tx *gorm.DB, orderID uint64) error {
 		"status":   status,
 		"order_id": nil,
 	}).Error
+}
+
+func defaultBargainSettings() model.BargainSettings {
+	return model.BargainSettings{
+		ID:                   1,
+		HelpDailyMax:         20,
+		HelpDailyRefreshTime: "00:00:00",
+	}
+}
+
+func (s *BargainService) getSettingsTx(tx *gorm.DB) (*model.BargainSettings, error) {
+	var row model.BargainSettings
+	err := tx.First(&row, 1).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		row = defaultBargainSettings()
+		if cErr := tx.Create(&row).Error; cErr != nil {
+			return nil, cErr
+		}
+		return &row, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if row.HelpDailyMax == 0 {
+		row.HelpDailyMax = 20
+	}
+	if strings.TrimSpace(row.HelpDailyRefreshTime) == "" {
+		row.HelpDailyRefreshTime = "00:00:00"
+	}
+	return &row, nil
+}
+
+func (s *BargainService) GetSettings() (*model.BargainSettings, error) {
+	return s.getSettingsTx(s.DB)
+}
+
+type UpdateBargainSettingsInput struct {
+	HelpDailyMax         *uint32
+	HelpDailyRefreshTime *string
+}
+
+func (s *BargainService) UpdateSettings(input UpdateBargainSettingsInput) (*model.BargainSettings, error) {
+	row, err := s.getSettingsTx(s.DB)
+	if err != nil {
+		return nil, err
+	}
+	updates := map[string]interface{}{}
+	if input.HelpDailyMax != nil {
+		if *input.HelpDailyMax == 0 {
+			return nil, fmt.Errorf("%w: help_daily_max", ErrInvalidProductArg)
+		}
+		updates["help_daily_max"] = *input.HelpDailyMax
+	}
+	if input.HelpDailyRefreshTime != nil {
+		norm, nErr := NormalizeDailyRefreshTime(*input.HelpDailyRefreshTime)
+		if nErr != nil {
+			return nil, fmt.Errorf("%w: help_daily_refresh_time 格式无效", ErrInvalidProductArg)
+		}
+		updates["help_daily_refresh_time"] = norm
+	}
+	if len(updates) == 0 {
+		return row, nil
+	}
+	if err := s.DB.Model(&model.BargainSettings{}).Where("id = ?", 1).Updates(updates).Error; err != nil {
+		return nil, err
+	}
+	return s.GetSettings()
 }

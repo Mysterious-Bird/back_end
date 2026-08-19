@@ -74,6 +74,42 @@ func (h *BargainHandler) Help(c *gin.Context) {
 	response.OK(c, view)
 }
 
+func (h *BargainHandler) GetSettings(c *gin.Context) {
+	row, err := h.BargainSvc.GetSettings()
+	if err != nil {
+		c.Error(err)
+		response.InternalError(c, "读取砍价设置失败")
+		return
+	}
+	response.OK(c, row)
+}
+
+type updateBargainSettingsBody struct {
+	HelpDailyMax         *uint32 `json:"help_daily_max"`
+	HelpDailyRefreshTime *string `json:"help_daily_refresh_time"`
+}
+
+func (h *BargainHandler) UpdateSettings(c *gin.Context) {
+	var body updateBargainSettingsBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		response.BadRequest(c, "参数无效")
+		return
+	}
+	if body.HelpDailyMax == nil && body.HelpDailyRefreshTime == nil {
+		response.BadRequest(c, "请至少修改一项")
+		return
+	}
+	row, err := h.BargainSvc.UpdateSettings(service.UpdateBargainSettingsInput{
+		HelpDailyMax:         body.HelpDailyMax,
+		HelpDailyRefreshTime: body.HelpDailyRefreshTime,
+	})
+	if err != nil {
+		handleBargainError(c, err)
+		return
+	}
+	response.OK(c, row)
+}
+
 func handleBargainError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, service.ErrBargainNotFound):
@@ -96,6 +132,8 @@ func handleBargainError(c *gin.Context, err error) {
 		response.Fail(c, 404, 404, "活动商品不存在")
 	case errors.Is(err, service.ErrActivityNotActive):
 		response.BadRequest(c, "活动未开始或已结束")
+	case errors.Is(err, service.ErrInvalidProductArg):
+		response.BadRequest(c, err.Error())
 	default:
 		c.Error(err)
 		response.InternalError(c, "砍价失败")
