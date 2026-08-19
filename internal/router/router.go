@@ -228,6 +228,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 		// admin 可代客下单测试（OrderService 仍按 accountID 隔离数据，无越权风险）
 		user.Use(middleware.RequireAccountTypes(model.AccountTypeUser, model.AccountTypeAdmin))
 		user.POST("/bargain/sessions", bargainHandler.Start)
+		user.GET("/bargain/sessions", bargainHandler.ListMine)
 		user.POST("/bargain/sessions/:id/help", bargainHandler.Help)
 		registerUserRoutes(user, userHandler, couponHandler, paymentHandler, takeoutHandler, deliveryFeeHandler, fulfillmentEventHandler)
 

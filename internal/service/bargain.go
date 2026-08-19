@@ -480,6 +480,64 @@ func (s *BargainService) GetSession(sessionID uint64, viewerAccountID *uint64) (
 	return s.buildView(s.DB, &sess, product, viewerAccountID)
 }
 
+// ListMine 发起人自己的砍价会话；默认仅进行中（含读时过期）。
+func (s *BargainService) ListMine(accountID uint64, statusFilter *uint8) ([]BargainSessionView, error) {
+	now := time.Now()
+	q := query.NotDeleted(s.DB).Where("initiator_account_id = ?", accountID)
+	if statusFilter != nil {
+		q = q.Where("status = ?", *statusFilter)
+	} else {
+		q = q.Where("status = ?", model.BargainStatusOngoing)
+	}
+	var rows []model.BargainSession
+	if err := q.Order("id DESC").Limit(50).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]BargainSessionView, 0, len(rows))
+	for i := range rows {
+		sess := rows[i]
+		_ = s.DB.Transaction(func(tx *gorm.DB) error {
+			return s.expireIfNeeded(tx, &sess, now)
+		})
+		if statusFilter == nil && sess.Status != model.BargainStatusOngoing {
+			continue
+		}
+		if statusFilter != nil && sess.Status != *statusFilter {
+			continue
+		}
+		var product model.Product
+		if err := query.NotDeleted(s.DB).First(&product, sess.ProductID).Error; err != nil {
+			continue
+		}
+		view, err := s.buildView(s.DB, &sess, &product, &accountID)
+		if err != nil {
+			continue
+		}
+		out = append(out, *view)
+	}
+	return out, nil
+}
+
+func (s *BargainService) CountMineOngoing(accountID uint64) (int64, error) {
+	now := time.Now()
+	// 惰性过期一批，再计数
+	var rows []model.BargainSession
+	if err := query.NotDeleted(s.DB).
+		Where("initiator_account_id = ? AND status = ?", accountID, model.BargainStatusOngoing).
+		Find(&rows).Error; err != nil {
+		return 0, err
+	}
+	var n int64
+	for i := range rows {
+		sess := rows[i]
+		_ = s.expireIfNeeded(s.DB, &sess, now)
+		if sess.Status == model.BargainStatusOngoing && !now.After(sess.ExpireAt) {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (s *BargainService) loadBargainAP(tx *gorm.DB, activityProductID uint64) (*model.ActivityProduct, *model.Activity, *model.Product, error) {
 	var ap model.ActivityProduct
 	if err := query.NotDeleted(tx).Preload("Product").First(&ap, activityProductID).Error; err != nil {

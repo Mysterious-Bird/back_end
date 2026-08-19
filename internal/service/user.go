@@ -23,6 +23,7 @@ type UserStats struct {
 	AddressCount         int64                    `json:"address_count"`
 	InventoryKindCount   int64                    `json:"inventory_kind_count"`
 	InventoryTotalQty    int64                    `json:"inventory_total_qty"`
+	BargainOngoingCount  int64                    `json:"bargain_ongoing_count"`
 	OrderBadges          UserOrderBadges          `json:"order_badges"`
 	DeliveryBadges       UserDeliveryBadges       `json:"delivery_badges"`
 	InventoryUsageBadges UserInventoryUsageBadges `json:"inventory_usage_badges"`
@@ -63,16 +64,16 @@ type UserInventoryUsageBadges struct {
 }
 
 type ProfileDetail struct {
-	Account   model.Account    `json:"account"`
-	Profile   *model.UserProfile `json:"profile,omitempty"`
+	Account   model.Account       `json:"account"`
+	Profile   *model.UserProfile  `json:"profile,omitempty"`
 	Addresses []model.UserAddress `json:"addresses"`
-	Stats     UserStats        `json:"stats"`
+	Stats     UserStats           `json:"stats"`
 }
 
 type OverviewResponse struct {
-	Account model.Account  `json:"account"`
+	Account model.Account      `json:"account"`
 	Profile *model.UserProfile `json:"profile,omitempty"`
-	Stats   UserStats      `json:"stats"`
+	Stats   UserStats          `json:"stats"`
 }
 
 type CartItemView struct {
@@ -427,6 +428,13 @@ func (s *UserService) buildStats(accountID uint64) (*UserStats, error) {
 	}
 	stats.InventoryKindCount = agg.KindCount
 	stats.InventoryTotalQty = agg.TotalQty
+
+	if err := query.NotDeleted(s.DB.Model(&model.BargainSession{})).
+		Where("initiator_account_id = ? AND status = ? AND expire_at > ?",
+			accountID, model.BargainStatusOngoing, time.Now()).
+		Count(&stats.BargainOngoingCount).Error; err != nil {
+		return nil, err
+	}
 
 	orderBadges, err := buildUserOrderBadges(s.DB, accountID)
 	if err != nil {

@@ -2,6 +2,8 @@ package handler
 
 import (
 	"errors"
+	"strconv"
+	"strings"
 
 	"yujixinjiang/backend/internal/auth"
 	"yujixinjiang/backend/internal/response"
@@ -72,6 +74,30 @@ func (h *BargainHandler) Help(c *gin.Context) {
 		return
 	}
 	response.OK(c, view)
+}
+
+func (h *BargainHandler) ListMine(c *gin.Context) {
+	accountID, ok := auth.AccountID(c)
+	if !ok {
+		response.Fail(c, 401, 401, "未登录")
+		return
+	}
+	var statusFilter *uint8
+	if raw := strings.TrimSpace(c.Query("status")); raw != "" {
+		n, err := strconv.ParseUint(raw, 10, 8)
+		if err != nil {
+			response.BadRequest(c, "status 无效")
+			return
+		}
+		v := uint8(n)
+		statusFilter = &v
+	}
+	list, err := h.BargainSvc.ListMine(accountID, statusFilter)
+	if err != nil {
+		handleBargainError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"list": list, "total": len(list)})
 }
 
 func (h *BargainHandler) GetSettings(c *gin.Context) {
