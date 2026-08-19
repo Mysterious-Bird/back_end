@@ -53,6 +53,16 @@ type ActivityProductRequest struct {
 	MonthlyRefreshDay          uint8    `json:"monthly_refresh_day" example:"1"`
 	MonthlyRefreshTime         string   `json:"monthly_refresh_time" example:"00:00:00"`
 	EnableGroupBuy             uint8    `json:"enable_group_buy" example:"0"`
+	EnableBargain              uint8    `json:"enable_bargain" example:"0"`
+	BargainFloorPrice          *float64 `json:"bargain_floor_price"`
+	BargainDurationHours       uint32   `json:"bargain_duration_hours" example:"24"`
+	BargainNewUserHours        uint32   `json:"bargain_new_user_hours" example:"48"`
+	BargainHelpDailyMax        uint32   `json:"bargain_help_daily_max" example:"20"`
+	BargainSelfCutMax          float64  `json:"bargain_self_cut_max" example:"1"`
+	BargainNewMin              float64  `json:"bargain_new_min" example:"1"`
+	BargainNewMax              float64  `json:"bargain_new_max" example:"5"`
+	BargainOldMin              float64  `json:"bargain_old_min" example:"0.1"`
+	BargainOldMax              float64  `json:"bargain_old_max" example:"1"`
 	GroupBuyPrice              *float64 `json:"group_buy_price"`
 	GroupBuyTargetCount        *uint32  `json:"group_buy_target_count"`
 	GroupBuyAllowRepeat        uint8    `json:"group_buy_allow_repeat" example:"0"`
@@ -87,6 +97,16 @@ type activityProductAddBody struct {
 	MonthlyRefreshDay          FlexUInt8      `json:"monthly_refresh_day"`
 	MonthlyRefreshTime         string         `json:"monthly_refresh_time"`
 	EnableGroupBuy             FlexUInt8      `json:"enable_group_buy"`
+	EnableBargain              FlexUInt8      `json:"enable_bargain"`
+	BargainFloorPrice          FlexFloat64Ptr `json:"bargain_floor_price"`
+	BargainDurationHours       FlexUInt32     `json:"bargain_duration_hours"`
+	BargainNewUserHours        FlexUInt32     `json:"bargain_new_user_hours"`
+	BargainHelpDailyMax        FlexUInt32     `json:"bargain_help_daily_max"`
+	BargainSelfCutMax          FlexFloat64    `json:"bargain_self_cut_max"`
+	BargainNewMin              FlexFloat64    `json:"bargain_new_min"`
+	BargainNewMax              FlexFloat64    `json:"bargain_new_max"`
+	BargainOldMin              FlexFloat64    `json:"bargain_old_min"`
+	BargainOldMax              FlexFloat64    `json:"bargain_old_max"`
 	GroupBuyPrice              FlexFloat64Ptr `json:"group_buy_price"`
 	GroupBuyTargetCount        FlexUInt32Ptr  `json:"group_buy_target_count"`
 	GroupBuyAllowRepeat        FlexUInt8      `json:"group_buy_allow_repeat"`
@@ -129,7 +149,13 @@ func parseActivityProductAddBody(c *gin.Context) (ActivityProductRequest, error)
 		PlatformDailyMax: raw.PlatformDailyMax.Uint32(), DailyRefreshTime: raw.DailyRefreshTime,
 		WeeklyRefreshWeekday: raw.WeeklyRefreshWeekday.Uint8(), WeeklyRefreshTime: raw.WeeklyRefreshTime,
 		MonthlyRefreshDay: raw.MonthlyRefreshDay.Uint8(), MonthlyRefreshTime: raw.MonthlyRefreshTime,
-		EnableGroupBuy: raw.EnableGroupBuy.Uint8(), GroupBuyPrice: raw.GroupBuyPrice.Ptr(),
+		EnableGroupBuy: raw.EnableGroupBuy.Uint8(), EnableBargain: raw.EnableBargain.Uint8(),
+		BargainFloorPrice: raw.BargainFloorPrice.Ptr(), BargainDurationHours: raw.BargainDurationHours.Uint32(),
+		BargainNewUserHours: raw.BargainNewUserHours.Uint32(), BargainHelpDailyMax: raw.BargainHelpDailyMax.Uint32(),
+		BargainSelfCutMax: raw.BargainSelfCutMax.Float64(), BargainNewMin: raw.BargainNewMin.Float64(),
+		BargainNewMax: raw.BargainNewMax.Float64(), BargainOldMin: raw.BargainOldMin.Float64(),
+		BargainOldMax: raw.BargainOldMax.Float64(),
+		GroupBuyPrice: raw.GroupBuyPrice.Ptr(),
 		GroupBuyTargetCount: raw.GroupBuyTargetCount.Ptr(), GroupBuyAllowRepeat: raw.GroupBuyAllowRepeat.Uint8(),
 		GroupBuyMaxJoinsPerUser:    raw.GroupBuyMaxJoinsPerUser.Uint32(),
 		GroupBuyMaxConcurrentTeams: raw.GroupBuyMaxConcurrentTeams.Uint32(),
@@ -157,6 +183,16 @@ type activityProductUpdateBody struct {
 	MonthlyRefreshDay          FlexUInt8Ptr       `json:"monthly_refresh_day"`
 	MonthlyRefreshTime         FlexNullableString `json:"monthly_refresh_time"`
 	EnableGroupBuy             FlexUInt8Ptr       `json:"enable_group_buy"`
+	EnableBargain              FlexUInt8Ptr       `json:"enable_bargain"`
+	BargainFloorPrice          FlexFloat64Ptr     `json:"bargain_floor_price"`
+	BargainDurationHours       FlexUInt32Ptr      `json:"bargain_duration_hours"`
+	BargainNewUserHours        FlexUInt32Ptr      `json:"bargain_new_user_hours"`
+	BargainHelpDailyMax        FlexUInt32Ptr      `json:"bargain_help_daily_max"`
+	BargainSelfCutMax          FlexFloat64Ptr     `json:"bargain_self_cut_max"`
+	BargainNewMin              FlexFloat64Ptr     `json:"bargain_new_min"`
+	BargainNewMax              FlexFloat64Ptr     `json:"bargain_new_max"`
+	BargainOldMin              FlexFloat64Ptr     `json:"bargain_old_min"`
+	BargainOldMax              FlexFloat64Ptr     `json:"bargain_old_max"`
 	GroupBuyPrice              FlexFloat64Ptr     `json:"group_buy_price"`
 	GroupBuyTargetCount        FlexUInt32Ptr      `json:"group_buy_target_count"`
 	GroupBuyAllowRepeat        FlexUInt8Ptr       `json:"group_buy_allow_repeat"`
@@ -181,7 +217,13 @@ func parseActivityProductUpdateBody(c *gin.Context) (UpdateActivityProductReques
 		PlatformDailyMax: raw.PlatformDailyMax.Ptr(), DailyRefreshTime: raw.DailyRefreshTime.Ptr(),
 		WeeklyRefreshWeekday: raw.WeeklyRefreshWeekday.Ptr(), WeeklyRefreshTime: raw.WeeklyRefreshTime.Ptr(),
 		MonthlyRefreshDay: raw.MonthlyRefreshDay.Ptr(), MonthlyRefreshTime: raw.MonthlyRefreshTime.Ptr(),
-		EnableGroupBuy: raw.EnableGroupBuy.Ptr(), GroupBuyPrice: raw.GroupBuyPrice.Ptr(),
+		EnableGroupBuy: raw.EnableGroupBuy.Ptr(), EnableBargain: raw.EnableBargain.Ptr(),
+		BargainFloorPrice: raw.BargainFloorPrice.Ptr(), BargainDurationHours: raw.BargainDurationHours.Ptr(),
+		BargainNewUserHours: raw.BargainNewUserHours.Ptr(), BargainHelpDailyMax: raw.BargainHelpDailyMax.Ptr(),
+		BargainSelfCutMax: raw.BargainSelfCutMax.Ptr(), BargainNewMin: raw.BargainNewMin.Ptr(),
+		BargainNewMax: raw.BargainNewMax.Ptr(), BargainOldMin: raw.BargainOldMin.Ptr(),
+		BargainOldMax: raw.BargainOldMax.Ptr(),
+		GroupBuyPrice: raw.GroupBuyPrice.Ptr(),
 		GroupBuyTargetCount: raw.GroupBuyTargetCount.Ptr(), GroupBuyAllowRepeat: raw.GroupBuyAllowRepeat.Ptr(),
 		GroupBuyMaxJoinsPerUser:    raw.GroupBuyMaxJoinsPerUser.Ptr(),
 		GroupBuyMaxConcurrentTeams: raw.GroupBuyMaxConcurrentTeams.Ptr(),
@@ -209,6 +251,16 @@ type UpdateActivityProductRequest struct {
 	MonthlyRefreshDay          *uint8   `json:"monthly_refresh_day" example:"1"`
 	MonthlyRefreshTime         *string  `json:"monthly_refresh_time" example:"00:00:00"`
 	EnableGroupBuy             *uint8   `json:"enable_group_buy" example:"1"`
+	EnableBargain              *uint8   `json:"enable_bargain" example:"0"`
+	BargainFloorPrice          *float64 `json:"bargain_floor_price"`
+	BargainDurationHours       *uint32  `json:"bargain_duration_hours"`
+	BargainNewUserHours        *uint32  `json:"bargain_new_user_hours"`
+	BargainHelpDailyMax        *uint32  `json:"bargain_help_daily_max"`
+	BargainSelfCutMax          *float64 `json:"bargain_self_cut_max"`
+	BargainNewMin              *float64 `json:"bargain_new_min"`
+	BargainNewMax              *float64 `json:"bargain_new_max"`
+	BargainOldMin              *float64 `json:"bargain_old_min"`
+	BargainOldMax              *float64 `json:"bargain_old_max"`
 	GroupBuyPrice              *float64 `json:"group_buy_price" example:"7.9"`
 	GroupBuyTargetCount        *uint32  `json:"group_buy_target_count" example:"3"`
 	GroupBuyAllowRepeat        *uint8   `json:"group_buy_allow_repeat" example:"0"`
@@ -242,6 +294,11 @@ func toActivityProductInput(req ActivityProductRequest) service.ActivityProductI
 		WeeklyRefreshWeekday: req.WeeklyRefreshWeekday, WeeklyRefreshTime: req.WeeklyRefreshTime,
 		MonthlyRefreshDay: req.MonthlyRefreshDay, MonthlyRefreshTime: req.MonthlyRefreshTime,
 		EnableGroupBuy: req.EnableGroupBuy,
+		EnableBargain:  req.EnableBargain, BargainFloorPrice: req.BargainFloorPrice,
+		BargainDurationHours: req.BargainDurationHours, BargainNewUserHours: req.BargainNewUserHours,
+		BargainHelpDailyMax: req.BargainHelpDailyMax, BargainSelfCutMax: req.BargainSelfCutMax,
+		BargainNewMin: req.BargainNewMin, BargainNewMax: req.BargainNewMax,
+		BargainOldMin: req.BargainOldMin, BargainOldMax: req.BargainOldMax,
 		GroupBuyPrice:  req.GroupBuyPrice, GroupBuyTargetCount: req.GroupBuyTargetCount,
 		GroupBuyAllowRepeat:        req.GroupBuyAllowRepeat,
 		GroupBuyMaxJoinsPerUser:    req.GroupBuyMaxJoinsPerUser,
@@ -260,7 +317,12 @@ func toActivityProductPatch(req UpdateActivityProductRequest) service.UpdateActi
 		PlatformDailyMax: req.PlatformDailyMax, DailyRefreshTime: req.DailyRefreshTime,
 		WeeklyRefreshWeekday: req.WeeklyRefreshWeekday, WeeklyRefreshTime: req.WeeklyRefreshTime,
 		MonthlyRefreshDay: req.MonthlyRefreshDay, MonthlyRefreshTime: req.MonthlyRefreshTime,
-		EnableGroupBuy: req.EnableGroupBuy, GroupBuyPrice: req.GroupBuyPrice,
+		EnableGroupBuy: req.EnableGroupBuy, EnableBargain: req.EnableBargain,
+		BargainFloorPrice: req.BargainFloorPrice, BargainDurationHours: req.BargainDurationHours,
+		BargainNewUserHours: req.BargainNewUserHours, BargainHelpDailyMax: req.BargainHelpDailyMax,
+		BargainSelfCutMax: req.BargainSelfCutMax, BargainNewMin: req.BargainNewMin,
+		BargainNewMax: req.BargainNewMax, BargainOldMin: req.BargainOldMin, BargainOldMax: req.BargainOldMax,
+		GroupBuyPrice: req.GroupBuyPrice,
 		GroupBuyTargetCount: req.GroupBuyTargetCount, GroupBuyAllowRepeat: req.GroupBuyAllowRepeat,
 		GroupBuyMaxJoinsPerUser:    req.GroupBuyMaxJoinsPerUser,
 		GroupBuyMaxConcurrentTeams: req.GroupBuyMaxConcurrentTeams,

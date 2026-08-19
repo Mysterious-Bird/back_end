@@ -60,6 +60,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 	activitySvc := &service.ActivityService{DB: db}
 	announcementSvc := &service.AnnouncementService{DB: db}
 	homeCarouselSvc := &service.HomeCarouselService{DB: db}
+	bargainSvc := &service.BargainService{DB: db}
 	payProvider, err := payment.NewProvider(cfg, db)
 	if err != nil {
 		panic("初始化支付渠道失败: " + err.Error())
@@ -156,6 +157,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 		AnnouncementSvc: announcementSvc, MerchantSvc: merchantSvc,
 	}
 	homeCarouselHandler := &handler.HomeCarouselHandler{Svc: homeCarouselSvc}
+	bargainHandler := &handler.BargainHandler{BargainSvc: bargainSvc}
 	activityHandler := &handler.ActivityHandler{
 		ActivitySvc: activitySvc, MerchantSvc: merchantSvc,
 	}
@@ -184,6 +186,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 
 		public.GET("/announcements", announcementHandler.ListPublic)
 		public.GET("/home/carousel", homeCarouselHandler.ListPublic)
+		public.GET("/bargain/sessions/:id", middleware.OptionalAuth(cfg.JWT.Secret, db), bargainHandler.Get)
 		public.GET("/seckill/products", middleware.OptionalAuth(cfg.JWT.Secret, db), activityHandler.ListSeckillProducts)
 		public.GET("/rank/hot-groups", rankHandler.ListHotGroups)
 		public.GET("/rank/hot-sales", rankHandler.ListHotSales)
@@ -224,6 +227,8 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 		user := authorized.Group("")
 		// admin 可代客下单测试（OrderService 仍按 accountID 隔离数据，无越权风险）
 		user.Use(middleware.RequireAccountTypes(model.AccountTypeUser, model.AccountTypeAdmin))
+		user.POST("/bargain/sessions", bargainHandler.Start)
+		user.POST("/bargain/sessions/:id/help", bargainHandler.Help)
 		registerUserRoutes(user, userHandler, couponHandler, paymentHandler, takeoutHandler, deliveryFeeHandler, fulfillmentEventHandler)
 
 		merchant := authorized.Group("/merchant")

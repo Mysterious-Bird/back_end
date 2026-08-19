@@ -23,6 +23,7 @@ type CreateOrderRequest struct {
 	GroupBuyTeamID    *uint64                         `json:"group_buy_team_id"`
 	StartNewTeam      bool                            `json:"start_new_team"`
 	ActivityProductID *uint64                         `json:"activity_product_id" example:"1"`
+	BargainSessionID  *uint64                         `json:"bargain_session_id" example:"1"`
 	DeliveryType      uint8                           `json:"delivery_type" example:"1"`
 	AddressID         *uint64                         `json:"address_id"`
 	DeliveryLatitude  *float64                        `json:"delivery_latitude"`
@@ -82,7 +83,7 @@ func (h *UserHandler) CreateOrder(c *gin.Context) {
 			ProductID: req.ProductID, MerchantID: req.MerchantID, Quantity: req.Quantity,
 			PackageSelections: req.PackageSelections,
 			PurchaseType:      req.PurchaseType, GroupBuyID: req.GroupBuyID, GroupBuyTeamID: req.GroupBuyTeamID,
-			StartNewTeam: req.StartNewTeam,
+			StartNewTeam:      req.StartNewTeam,
 			ActivityProductID: req.ActivityProductID,
 			DeliveryType:      req.DeliveryType, AddressID: req.AddressID, Remark: req.Remark,
 			DeliveryLatitude: req.DeliveryLatitude, DeliveryLongitude: req.DeliveryLongitude,
@@ -96,8 +97,9 @@ func (h *UserHandler) CreateOrder(c *gin.Context) {
 		view, err = h.OrderSvc.Create(accountID, service.CreateOrderInput{
 			ProductID: req.ProductID, MerchantID: req.MerchantID, Quantity: req.Quantity,
 			PurchaseType: req.PurchaseType, GroupBuyID: req.GroupBuyID, GroupBuyTeamID: req.GroupBuyTeamID,
-			StartNewTeam: req.StartNewTeam,
+			StartNewTeam:      req.StartNewTeam,
 			ActivityProductID: req.ActivityProductID,
+			BargainSessionID:  req.BargainSessionID,
 			DeliveryType:      req.DeliveryType, AddressID: req.AddressID, Remark: req.Remark,
 			DeliveryLatitude: req.DeliveryLatitude, DeliveryLongitude: req.DeliveryLongitude,
 			CartItemID: req.CartItemID, UserCouponID: req.UserCouponID,
@@ -283,6 +285,23 @@ func handleOrderError(c *gin.Context, err error) {
 		response.BadRequest(c, msg)
 	case errors.Is(err, service.ErrGroupBuyAlreadyJoined):
 		response.BadRequest(c, "您已参与该拼团，无法重复参团")
+	case errors.Is(err, service.ErrBargainNotFound):
+		response.Fail(c, 404, 404, "砍价不存在")
+	case errors.Is(err, service.ErrBargainExpired):
+		response.BadRequest(c, "砍价已过期")
+	case errors.Is(err, service.ErrBargainForbidden), errors.Is(err, service.ErrBargainConflict):
+		msg := "砍价不可用"
+		if raw := err.Error(); len(raw) > 0 {
+			msg = raw
+			for _, prefix := range []error{service.ErrBargainForbidden, service.ErrBargainConflict} {
+				p := prefix.Error()
+				if len(raw) > len(p)+2 && raw[:len(p)] == p && raw[len(p):len(p)+2] == ": " {
+					msg = raw[len(p)+2:]
+					break
+				}
+			}
+		}
+		response.BadRequest(c, msg)
 	case errors.Is(err, service.ErrActivityNotFound), errors.Is(err, service.ErrActivityProductNotFound):
 		response.Fail(c, 404, 404, "活动商品不存在")
 	case errors.Is(err, service.ErrActivityNotActive):
@@ -355,8 +374,8 @@ type ReviewOrderRequest struct {
 }
 
 type VerifyRequest struct {
-	Code             string                         `json:"code" binding:"required" example:"V1a2b3c4d"`
-	PackageUnits     []service.PackageUnitInput     `json:"package_units"`
+	Code             string                             `json:"code" binding:"required" example:"V1a2b3c4d"`
+	PackageUnits     []service.PackageUnitInput         `json:"package_units"`
 	OptionSelections []service.OptionSelectionUnitInput `json:"option_selections"`
 }
 
@@ -780,7 +799,7 @@ func (h *MerchantOrderHandler) ReviewCancelInventoryUsage(c *gin.Context) {
 		handleInventoryError(c, err)
 		return
 	}
-		response.OK(c, view)
+	response.OK(c, view)
 }
 
 // MarkDeliveryPrepared godoc

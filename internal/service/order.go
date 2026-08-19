@@ -50,6 +50,7 @@ type CreateOrderInput struct {
 	GroupBuyTeamID    *uint64
 	StartNewTeam      bool
 	ActivityProductID *uint64
+	BargainSessionID  *uint64
 	DeliveryType      uint8
 	AddressID         *uint64
 	DeliveryLatitude  *float64
@@ -177,6 +178,25 @@ func (s *OrderService) Create(accountID uint64, input CreateOrderInput) (*OrderV
 			if input.UserCouponID != nil {
 				return nil, ErrCouponNotApplicable
 			}
+		}
+		if input.BargainSessionID != nil {
+			if input.PurchaseType == model.PurchaseTypeGroup {
+				return nil, fmt.Errorf("%w: 砍价订单不能拼团", ErrBargainConflict)
+			}
+			var sess model.BargainSession
+			if err := query.NotDeleted(s.DB).First(&sess, *input.BargainSessionID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil, ErrBargainNotFound
+				}
+				return nil, err
+			}
+			if err := assertSessionBuyable(&sess, accountID, time.Now()); err != nil {
+				return nil, err
+			}
+			if sess.ActivityProductID != *activityProductID {
+				return nil, fmt.Errorf("%w: 砍价会话与活动商品不匹配", ErrBargainConflict)
+			}
+			unitPrice = roundBargainMoney(sess.CurrentPrice)
 		}
 	} else {
 		productSvc := &ProductService{DB: s.DB}
@@ -390,6 +410,11 @@ func (s *OrderService) Create(accountID uint64, input CreateOrderInput) (*OrderV
 
 		if err := tx.Create(&item).Error; err != nil {
 			return err
+		}
+		if input.BargainSessionID != nil {
+			if err := markBargainSessionOrdered(tx, *input.BargainSessionID, order.ID); err != nil {
+				return err
+			}
 		}
 
 		stockCh := stockChannelForOrder(product, input.PurchaseType, activityProductID != nil)
@@ -887,6 +912,9 @@ func (s *OrderService) Cancel(accountID, orderID uint64) error {
 			}
 		}
 		if err := s.refundPaymentInTx(tx, orderID); err != nil {
+			return err
+		}
+		if err := restoreBargainSessionIfUnpaid(tx, orderID); err != nil {
 			return err
 		}
 		return tx.Model(order).Update("status", model.OrderStatusCancelled).Error
