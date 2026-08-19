@@ -61,6 +61,16 @@ type ActivityProductInput struct {
 	MonthlyRefreshDay          uint8
 	MonthlyRefreshTime         string
 	EnableGroupBuy             uint8
+	EnableBargain              uint8
+	BargainFloorPrice          *float64
+	BargainDurationHours       uint32
+	BargainNewUserHours        uint32
+	BargainHelpDailyMax        uint32
+	BargainSelfCutMax          float64
+	BargainNewMin              float64
+	BargainNewMax              float64
+	BargainOldMin              float64
+	BargainOldMax              float64
 	GroupBuyPrice              *float64
 	GroupBuyTargetCount        *uint32
 	GroupBuyAllowRepeat        uint8
@@ -91,6 +101,16 @@ type UpdateActivityProductPatch struct {
 	MonthlyRefreshDay          *uint8
 	MonthlyRefreshTime         *string
 	EnableGroupBuy             *uint8
+	EnableBargain              *uint8
+	BargainFloorPrice          *float64
+	BargainDurationHours       *uint32
+	BargainNewUserHours        *uint32
+	BargainHelpDailyMax        *uint32
+	BargainSelfCutMax          *float64
+	BargainNewMin              *float64
+	BargainNewMax              *float64
+	BargainOldMin              *float64
+	BargainOldMax              *float64
 	GroupBuyPrice              *float64
 	GroupBuyTargetCount        *uint32
 	GroupBuyAllowRepeat        *uint8
@@ -381,6 +401,10 @@ func (s *ActivityService) AddProduct(activityID uint64, input ActivityProductInp
 	// 同一活动允许同一 catalog product_id 多条活动商品
 	// （例如 9.9 直购、1 元拼团、9.9 拼团并存）。每次添加都插入新行。
 	input = normalizeActivityProductGroupBuyInput(input)
+	input = normalizeBargainInput(input)
+	if err := validateBargainOnActivityProduct(input); err != nil {
+		return nil, err
+	}
 	ap := model.ActivityProduct{
 		ActivityID: activityID, ProductID: input.ProductID,
 		ActivityPrice: input.ActivityPrice, ActivityStock: input.ActivityStock,
@@ -390,7 +414,12 @@ func (s *ActivityService) AddProduct(activityID uint64, input ActivityProductInp
 		PlatformDailyMax: input.PlatformDailyMax, DailyRefreshTime: input.DailyRefreshTime,
 		WeeklyRefreshWeekday: input.WeeklyRefreshWeekday, WeeklyRefreshTime: input.WeeklyRefreshTime,
 		MonthlyRefreshDay: input.MonthlyRefreshDay, MonthlyRefreshTime: input.MonthlyRefreshTime,
-		EnableGroupBuy: input.EnableGroupBuy, GroupBuyPrice: input.GroupBuyPrice,
+		EnableGroupBuy: input.EnableGroupBuy, EnableBargain: input.EnableBargain,
+		BargainFloorPrice: input.BargainFloorPrice, BargainDurationHours: input.BargainDurationHours,
+		BargainNewUserHours: input.BargainNewUserHours, BargainHelpDailyMax: input.BargainHelpDailyMax,
+		BargainSelfCutMax: input.BargainSelfCutMax, BargainNewMin: input.BargainNewMin,
+		BargainNewMax: input.BargainNewMax, BargainOldMin: input.BargainOldMin, BargainOldMax: input.BargainOldMax,
+		GroupBuyPrice:              input.GroupBuyPrice,
 		GroupBuyTargetCount:        input.GroupBuyTargetCount,
 		GroupBuyAllowRepeat:        input.GroupBuyAllowRepeat,
 		GroupBuyMaxJoinsPerUser:    maxJoins,
@@ -423,6 +452,7 @@ func normalizeActivityProductGroupBuyInput(input ActivityProductInput) ActivityP
 
 func activityProductUpdates(input ActivityProductInput, maxJoins uint32, status uint8) map[string]interface{} {
 	input = normalizeActivityProductGroupBuyInput(input)
+	input = normalizeBargainInput(input)
 	if input.EnableGroupBuy != 1 {
 		maxJoins = 0
 	}
@@ -439,6 +469,16 @@ func activityProductUpdates(input ActivityProductInput, maxJoins uint32, status 
 		"group_buy_allow_repeat":         input.GroupBuyAllowRepeat,
 		"group_buy_max_joins_per_user":   maxJoins,
 		"group_buy_max_concurrent_teams": input.GroupBuyMaxConcurrentTeams,
+		"enable_bargain":                 input.EnableBargain,
+		"bargain_floor_price":            input.BargainFloorPrice,
+		"bargain_duration_hours":         input.BargainDurationHours,
+		"bargain_new_user_hours":         input.BargainNewUserHours,
+		"bargain_help_daily_max":         input.BargainHelpDailyMax,
+		"bargain_self_cut_max":           input.BargainSelfCutMax,
+		"bargain_new_min":                input.BargainNewMin,
+		"bargain_new_max":                input.BargainNewMax,
+		"bargain_old_min":                input.BargainOldMin,
+		"bargain_old_max":                input.BargainOldMax,
 		"expire_days":                    normalizeExpireDays(input.ExpireDays),
 		"enable_coupon":                  normalizeEnableCoupon(input.EnableCoupon),
 		"sort_order":                     input.SortOrder, "status": status,
@@ -511,6 +551,9 @@ func (p UpdateActivityProductPatch) hasField() bool {
 		p.EnableGroupBuy != nil || p.GroupBuyPrice != nil ||
 		p.GroupBuyTargetCount != nil || p.GroupBuyAllowRepeat != nil ||
 		p.GroupBuyMaxJoinsPerUser != nil || p.GroupBuyMaxConcurrentTeams != nil || p.ExpireDays != nil ||
+		p.EnableBargain != nil || p.BargainFloorPrice != nil || p.BargainDurationHours != nil ||
+		p.BargainNewUserHours != nil || p.BargainHelpDailyMax != nil || p.BargainSelfCutMax != nil ||
+		p.BargainNewMin != nil || p.BargainNewMax != nil || p.BargainOldMin != nil || p.BargainOldMax != nil ||
 		p.EnableCoupon != nil || p.SortOrder != nil || p.Status != nil
 }
 
@@ -533,6 +576,16 @@ func activityProductInputToPatch(input ActivityProductInput) UpdateActivityProdu
 		MonthlyRefreshDay:          &input.MonthlyRefreshDay,
 		MonthlyRefreshTime:         &input.MonthlyRefreshTime,
 		EnableGroupBuy:             &input.EnableGroupBuy,
+		EnableBargain:              &input.EnableBargain,
+		BargainFloorPrice:          input.BargainFloorPrice,
+		BargainDurationHours:       &input.BargainDurationHours,
+		BargainNewUserHours:        &input.BargainNewUserHours,
+		BargainHelpDailyMax:        &input.BargainHelpDailyMax,
+		BargainSelfCutMax:          &input.BargainSelfCutMax,
+		BargainNewMin:              &input.BargainNewMin,
+		BargainNewMax:              &input.BargainNewMax,
+		BargainOldMin:              &input.BargainOldMin,
+		BargainOldMax:              &input.BargainOldMax,
 		GroupBuyPrice:              input.GroupBuyPrice,
 		GroupBuyTargetCount:        input.GroupBuyTargetCount,
 		GroupBuyAllowRepeat:        &input.GroupBuyAllowRepeat,
@@ -566,6 +619,16 @@ func mergeActivityProductPatch(ap *model.ActivityProduct, patch UpdateActivityPr
 		MonthlyRefreshDay:          ap.MonthlyRefreshDay,
 		MonthlyRefreshTime:         ap.MonthlyRefreshTime,
 		EnableGroupBuy:             ap.EnableGroupBuy,
+		EnableBargain:              ap.EnableBargain,
+		BargainFloorPrice:          ap.BargainFloorPrice,
+		BargainDurationHours:       ap.BargainDurationHours,
+		BargainNewUserHours:        ap.BargainNewUserHours,
+		BargainHelpDailyMax:        ap.BargainHelpDailyMax,
+		BargainSelfCutMax:          ap.BargainSelfCutMax,
+		BargainNewMin:              ap.BargainNewMin,
+		BargainNewMax:              ap.BargainNewMax,
+		BargainOldMin:              ap.BargainOldMin,
+		BargainOldMax:              ap.BargainOldMax,
 		GroupBuyPrice:              ap.GroupBuyPrice,
 		GroupBuyTargetCount:        ap.GroupBuyTargetCount,
 		GroupBuyAllowRepeat:        ap.GroupBuyAllowRepeat,
@@ -626,6 +689,36 @@ func mergeActivityProductPatch(ap *model.ActivityProduct, patch UpdateActivityPr
 	}
 	if patch.EnableGroupBuy != nil {
 		merged.EnableGroupBuy = *patch.EnableGroupBuy
+	}
+	if patch.EnableBargain != nil {
+		merged.EnableBargain = *patch.EnableBargain
+	}
+	if patch.BargainFloorPrice != nil {
+		merged.BargainFloorPrice = patch.BargainFloorPrice
+	}
+	if patch.BargainDurationHours != nil {
+		merged.BargainDurationHours = *patch.BargainDurationHours
+	}
+	if patch.BargainNewUserHours != nil {
+		merged.BargainNewUserHours = *patch.BargainNewUserHours
+	}
+	if patch.BargainHelpDailyMax != nil {
+		merged.BargainHelpDailyMax = *patch.BargainHelpDailyMax
+	}
+	if patch.BargainSelfCutMax != nil {
+		merged.BargainSelfCutMax = *patch.BargainSelfCutMax
+	}
+	if patch.BargainNewMin != nil {
+		merged.BargainNewMin = *patch.BargainNewMin
+	}
+	if patch.BargainNewMax != nil {
+		merged.BargainNewMax = *patch.BargainNewMax
+	}
+	if patch.BargainOldMin != nil {
+		merged.BargainOldMin = *patch.BargainOldMin
+	}
+	if patch.BargainOldMax != nil {
+		merged.BargainOldMax = *patch.BargainOldMax
 	}
 	if patch.GroupBuyPrice != nil {
 		merged.GroupBuyPrice = patch.GroupBuyPrice
@@ -1459,7 +1552,7 @@ func validateActivityProductInput(input ActivityProductInput) error {
 			return ErrInvalidProductArg
 		}
 	}
-	return nil
+	return validateBargainOnActivityProduct(normalizeBargainInput(input))
 }
 
 func normalizeWeeklyWeekday(v uint8) (uint8, error) {
