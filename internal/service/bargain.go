@@ -32,6 +32,8 @@ type BargainService struct {
 
 type BargainHelpView struct {
 	HelperAccountID uint64    `json:"helper_account_id"`
+	HelperNickname  string    `json:"helper_nickname"`
+	HelperAvatarURL string    `json:"helper_avatar_url,omitempty"`
 	CutAmount       float64   `json:"cut_amount"`
 	IsNewUser       bool      `json:"is_new_user"`
 	CreatedAt       time.Time `json:"created_at"`
@@ -571,11 +573,43 @@ func (s *BargainService) buildView(tx *gorm.DB, sess *model.BargainSession, prod
 	if err := tx.Where("session_id = ?", sess.ID).Order("id ASC").Find(&helps).Error; err != nil {
 		return nil, err
 	}
+	helperIDs := make([]uint64, 0, len(helps))
+	seen := map[uint64]struct{}{}
+	for _, h := range helps {
+		if _, ok := seen[h.HelperAccountID]; ok {
+			continue
+		}
+		seen[h.HelperAccountID] = struct{}{}
+		helperIDs = append(helperIDs, h.HelperAccountID)
+	}
+	nickByID := map[uint64]string{}
+	avatarByID := map[uint64]string{}
+	if len(helperIDs) > 0 {
+		var accounts []model.Account
+		if err := query.NotDeleted(tx).Select("id", "nickname", "avatar_url").
+			Where("id IN ?", helperIDs).Find(&accounts).Error; err != nil {
+			return nil, err
+		}
+		for _, a := range accounts {
+			if a.Nickname != nil && strings.TrimSpace(*a.Nickname) != "" {
+				nickByID[a.ID] = strings.TrimSpace(*a.Nickname)
+			}
+			if a.AvatarURL != nil && strings.TrimSpace(*a.AvatarURL) != "" {
+				avatarByID[a.ID] = strings.TrimSpace(*a.AvatarURL)
+			}
+		}
+	}
 	hv := make([]BargainHelpView, 0, len(helps))
 	already := false
 	for _, h := range helps {
+		nick := nickByID[h.HelperAccountID]
+		if nick == "" {
+			nick = fmt.Sprintf("用户%d", h.HelperAccountID)
+		}
 		hv = append(hv, BargainHelpView{
 			HelperAccountID: h.HelperAccountID,
+			HelperNickname:  nick,
+			HelperAvatarURL: avatarByID[h.HelperAccountID],
 			CutAmount:       h.CutAmount,
 			IsNewUser:       h.IsNewUser == 1,
 			CreatedAt:       h.CreatedAt,
