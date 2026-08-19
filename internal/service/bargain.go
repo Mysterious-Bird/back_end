@@ -54,6 +54,7 @@ func roundBargainMoney(v float64) float64 {
 }
 
 // rollCutAmount 在 [min,max] 与 remain 内随机砍幅；接近底价时压缩上限。
+// 最终砍幅永不大于 remain（砍完不低于底价）。
 func rollCutAmount(remain, min, max float64, r *rand.Rand) float64 {
 	remain = roundBargainMoney(remain)
 	if remain <= 0 {
@@ -95,6 +96,33 @@ func rollCutAmount(remain, min, max float64, r *rand.Rand) float64 {
 	return v
 }
 
+// resolveCutAmount 按模式计算砍幅：固定值取 fixed(=min)，随机走区间；均不超过 remain。
+func resolveCutAmount(remain float64, mode uint8, min, max float64, r *rand.Rand) float64 {
+	remain = roundBargainMoney(remain)
+	if remain <= 0 {
+		return 0
+	}
+	if mode == model.BargainCutModeFixed {
+		fixed := roundBargainMoney(min)
+		if fixed <= 0 {
+			return 0
+		}
+		if fixed > remain {
+			return remain
+		}
+		return fixed
+	}
+	// 0 或未知模式按随机
+	return rollCutAmount(remain, min, max, r)
+}
+
+func validateBargainCutMode(mode uint8, label string) error {
+	if mode == 0 || mode == model.BargainCutModeRandom || mode == model.BargainCutModeFixed {
+		return nil
+	}
+	return fmt.Errorf("%w: %s_cut_mode", ErrInvalidProductArg, label)
+}
+
 func validateBargainOnActivityProduct(input ActivityProductInput) error {
 	if input.EnableBargain != 1 {
 		return nil
@@ -111,10 +139,24 @@ func validateBargainOnActivityProduct(input ActivityProductInput) error {
 	if input.BargainDurationHours == 0 {
 		return fmt.Errorf("%w: bargain_duration_hours", ErrInvalidProductArg)
 	}
-	if input.BargainNewMin < 0 || input.BargainNewMax < input.BargainNewMin {
+	if err := validateBargainCutMode(input.BargainNewCutMode, "bargain_new"); err != nil {
+		return err
+	}
+	if err := validateBargainCutMode(input.BargainOldCutMode, "bargain_old"); err != nil {
+		return err
+	}
+	if input.BargainNewCutMode == model.BargainCutModeFixed {
+		if input.BargainNewMin <= 0 {
+			return fmt.Errorf("%w: bargain_new 固定金额无效", ErrInvalidProductArg)
+		}
+	} else if input.BargainNewMin < 0 || input.BargainNewMax < input.BargainNewMin {
 		return fmt.Errorf("%w: bargain_new 区间无效", ErrInvalidProductArg)
 	}
-	if input.BargainOldMin < 0 || input.BargainOldMax < input.BargainOldMin {
+	if input.BargainOldCutMode == model.BargainCutModeFixed {
+		if input.BargainOldMin <= 0 {
+			return fmt.Errorf("%w: bargain_old 固定金额无效", ErrInvalidProductArg)
+		}
+	} else if input.BargainOldMin < 0 || input.BargainOldMax < input.BargainOldMin {
 		return fmt.Errorf("%w: bargain_old 区间无效", ErrInvalidProductArg)
 	}
 	if input.BargainSelfCutMax <= 0 {
@@ -146,10 +188,26 @@ func normalizeBargainInput(input ActivityProductInput) ActivityProductInput {
 	if input.BargainSelfCutMax <= 0 {
 		input.BargainSelfCutMax = 1
 	}
-	if input.BargainNewMax <= 0 {
+	if input.BargainNewCutMode != model.BargainCutModeFixed {
+		input.BargainNewCutMode = model.BargainCutModeRandom
+	}
+	if input.BargainOldCutMode != model.BargainCutModeFixed {
+		input.BargainOldCutMode = model.BargainCutModeRandom
+	}
+	if input.BargainNewCutMode == model.BargainCutModeFixed {
+		if input.BargainNewMin <= 0 {
+			input.BargainNewMin = 1
+		}
+		input.BargainNewMax = input.BargainNewMin
+	} else if input.BargainNewMax <= 0 {
 		input.BargainNewMin, input.BargainNewMax = 1, 5
 	}
-	if input.BargainOldMax <= 0 {
+	if input.BargainOldCutMode == model.BargainCutModeFixed {
+		if input.BargainOldMin <= 0 {
+			input.BargainOldMin = 0.1
+		}
+		input.BargainOldMax = input.BargainOldMin
+	} else if input.BargainOldMax <= 0 {
 		input.BargainOldMin, input.BargainOldMax = 0.1, 1
 	}
 	return input
@@ -232,16 +290,21 @@ func (s *BargainService) StartSession(accountID, activityProductID uint64) (*Bar
 		if err := tx.Create(&sess).Error; err != nil {
 			return err
 		}
-		cut := rollCutAmount(
-			sess.CurrentPrice-sess.FloorPrice,
-			0.01,
-			math.Min(ap.BargainSelfCutMax, ap.BargainOldMax),
+		remain := roundBargainMoney(sess.CurrentPrice - sess.FloorPrice)
+		cut := resolveCutAmount(
+			remain,
+			ap.BargainOldCutMode,
+			ap.BargainOldMin,
+			ap.BargainOldMax,
 			rand.New(rand.NewSource(now.UnixNano()^int64(accountID))),
 		)
 		if cut > ap.BargainSelfCutMax {
 			cut = ap.BargainSelfCutMax
 		}
 		cut = roundBargainMoney(cut)
+		if cut > remain {
+			cut = remain
+		}
 		if cut > 0 {
 			help := model.BargainHelp{
 				SessionID:       sess.ID,
@@ -334,18 +397,20 @@ func (s *BargainService) Help(sessionID, helperAccountID uint64) (*BargainSessio
 			}
 		}
 
+		mode := ap.BargainOldCutMode
 		min, max := ap.BargainOldMin, ap.BargainOldMax
 		if isNew && !isSelf {
+			mode = ap.BargainNewCutMode
 			min, max = ap.BargainNewMin, ap.BargainNewMax
 		}
-		if isSelf {
-			max = math.Min(max, ap.BargainSelfCutMax)
-		}
-		cut := rollCutAmount(remain, min, max, rand.New(rand.NewSource(now.UnixNano()^int64(helperAccountID)^int64(sessionID))))
+		cut := resolveCutAmount(remain, mode, min, max, rand.New(rand.NewSource(now.UnixNano()^int64(helperAccountID)^int64(sessionID))))
 		if isSelf && cut > ap.BargainSelfCutMax {
 			cut = ap.BargainSelfCutMax
 		}
 		cut = roundBargainMoney(cut)
+		if cut > remain {
+			cut = remain
+		}
 		if cut <= 0 {
 			return ErrBargainNoRemain
 		}

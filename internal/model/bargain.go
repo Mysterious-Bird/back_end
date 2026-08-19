@@ -52,3 +52,8 @@ type BargainSettings struct {
 }
 
 func (BargainSettings) TableName() string { return "bargain_settings" }
+
+const (
+	BargainCutModeRandom uint8 = 1
+	BargainCutModeFixed  uint8 = 2
+)

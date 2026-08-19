@@ -67,8 +67,10 @@ type ActivityProductInput struct {
 	BargainNewUserHours        uint32
 	BargainHelpDailyMax        uint32
 	BargainSelfCutMax          float64
+	BargainNewCutMode          uint8
 	BargainNewMin              float64
 	BargainNewMax              float64
+	BargainOldCutMode          uint8
 	BargainOldMin              float64
 	BargainOldMax              float64
 	GroupBuyPrice              *float64
@@ -107,8 +109,10 @@ type UpdateActivityProductPatch struct {
 	BargainNewUserHours        *uint32
 	BargainHelpDailyMax        *uint32
 	BargainSelfCutMax          *float64
+	BargainNewCutMode          *uint8
 	BargainNewMin              *float64
 	BargainNewMax              *float64
+	BargainOldCutMode          *uint8
 	BargainOldMin              *float64
 	BargainOldMax              *float64
 	GroupBuyPrice              *float64
@@ -417,8 +421,9 @@ func (s *ActivityService) AddProduct(activityID uint64, input ActivityProductInp
 		EnableGroupBuy: input.EnableGroupBuy, EnableBargain: input.EnableBargain,
 		BargainFloorPrice: input.BargainFloorPrice, BargainDurationHours: input.BargainDurationHours,
 		BargainNewUserHours: input.BargainNewUserHours, BargainHelpDailyMax: input.BargainHelpDailyMax,
-		BargainSelfCutMax: input.BargainSelfCutMax, BargainNewMin: input.BargainNewMin,
-		BargainNewMax: input.BargainNewMax, BargainOldMin: input.BargainOldMin, BargainOldMax: input.BargainOldMax,
+		BargainSelfCutMax: input.BargainSelfCutMax, BargainNewCutMode: input.BargainNewCutMode,
+		BargainNewMin: input.BargainNewMin, BargainNewMax: input.BargainNewMax,
+		BargainOldCutMode: input.BargainOldCutMode, BargainOldMin: input.BargainOldMin, BargainOldMax: input.BargainOldMax,
 		GroupBuyPrice:              input.GroupBuyPrice,
 		GroupBuyTargetCount:        input.GroupBuyTargetCount,
 		GroupBuyAllowRepeat:        input.GroupBuyAllowRepeat,
@@ -475,8 +480,10 @@ func activityProductUpdates(input ActivityProductInput, maxJoins uint32, status 
 		"bargain_new_user_hours":         input.BargainNewUserHours,
 		"bargain_help_daily_max":         input.BargainHelpDailyMax,
 		"bargain_self_cut_max":           input.BargainSelfCutMax,
+		"bargain_new_cut_mode":           input.BargainNewCutMode,
 		"bargain_new_min":                input.BargainNewMin,
 		"bargain_new_max":                input.BargainNewMax,
+		"bargain_old_cut_mode":           input.BargainOldCutMode,
 		"bargain_old_min":                input.BargainOldMin,
 		"bargain_old_max":                input.BargainOldMax,
 		"expire_days":                    normalizeExpireDays(input.ExpireDays),
@@ -554,6 +561,7 @@ func (p UpdateActivityProductPatch) hasField() bool {
 		p.EnableBargain != nil || p.BargainFloorPrice != nil || p.BargainDurationHours != nil ||
 		p.BargainNewUserHours != nil || p.BargainHelpDailyMax != nil || p.BargainSelfCutMax != nil ||
 		p.BargainNewMin != nil || p.BargainNewMax != nil || p.BargainOldMin != nil || p.BargainOldMax != nil ||
+		p.BargainNewCutMode != nil || p.BargainOldCutMode != nil ||
 		p.EnableCoupon != nil || p.SortOrder != nil || p.Status != nil
 }
 
@@ -582,8 +590,10 @@ func activityProductInputToPatch(input ActivityProductInput) UpdateActivityProdu
 		BargainNewUserHours:        &input.BargainNewUserHours,
 		BargainHelpDailyMax:        &input.BargainHelpDailyMax,
 		BargainSelfCutMax:          &input.BargainSelfCutMax,
+		BargainNewCutMode:          &input.BargainNewCutMode,
 		BargainNewMin:              &input.BargainNewMin,
 		BargainNewMax:              &input.BargainNewMax,
+		BargainOldCutMode:          &input.BargainOldCutMode,
 		BargainOldMin:              &input.BargainOldMin,
 		BargainOldMax:              &input.BargainOldMax,
 		GroupBuyPrice:              input.GroupBuyPrice,
@@ -625,8 +635,10 @@ func mergeActivityProductPatch(ap *model.ActivityProduct, patch UpdateActivityPr
 		BargainNewUserHours:        ap.BargainNewUserHours,
 		BargainHelpDailyMax:        ap.BargainHelpDailyMax,
 		BargainSelfCutMax:          ap.BargainSelfCutMax,
+		BargainNewCutMode:          ap.BargainNewCutMode,
 		BargainNewMin:              ap.BargainNewMin,
 		BargainNewMax:              ap.BargainNewMax,
+		BargainOldCutMode:          ap.BargainOldCutMode,
 		BargainOldMin:              ap.BargainOldMin,
 		BargainOldMax:              ap.BargainOldMax,
 		GroupBuyPrice:              ap.GroupBuyPrice,
@@ -708,11 +720,17 @@ func mergeActivityProductPatch(ap *model.ActivityProduct, patch UpdateActivityPr
 	if patch.BargainSelfCutMax != nil {
 		merged.BargainSelfCutMax = *patch.BargainSelfCutMax
 	}
+	if patch.BargainNewCutMode != nil {
+		merged.BargainNewCutMode = *patch.BargainNewCutMode
+	}
 	if patch.BargainNewMin != nil {
 		merged.BargainNewMin = *patch.BargainNewMin
 	}
 	if patch.BargainNewMax != nil {
 		merged.BargainNewMax = *patch.BargainNewMax
+	}
+	if patch.BargainOldCutMode != nil {
+		merged.BargainOldCutMode = *patch.BargainOldCutMode
 	}
 	if patch.BargainOldMin != nil {
 		merged.BargainOldMin = *patch.BargainOldMin

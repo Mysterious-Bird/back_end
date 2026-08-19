@@ -76,6 +76,19 @@ func TestRollCutAmount_CapsAtRemain(t *testing.T) {
 	}
 }
 
+func TestResolveCutAmount_FixedCapsAtRemain(t *testing.T) {
+	r := rand.New(rand.NewSource(1))
+	got := resolveCutAmount(0.3, model.BargainCutModeFixed, 1.0, 1.0, r)
+	if got != 0.3 {
+		t.Fatalf("got %v want 0.3 (cap at remain / floor)", got)
+	}
+	got = resolveCutAmount(5, model.BargainCutModeFixed, 1.5, 1.5, r)
+	if got != 1.5 {
+		t.Fatalf("got %v want 1.5", got)
+	}
+}
+
+
 func TestRollCutAmount_ZeroRemain(t *testing.T) {
 	r := rand.New(rand.NewSource(1))
 	if got := rollCutAmount(0, 0.1, 1, r); got != 0 {

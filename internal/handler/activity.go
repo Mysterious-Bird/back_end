@@ -59,8 +59,10 @@ type ActivityProductRequest struct {
 	BargainNewUserHours        uint32   `json:"bargain_new_user_hours" example:"48"`
 	BargainHelpDailyMax        uint32   `json:"bargain_help_daily_max" example:"20"`
 	BargainSelfCutMax          float64  `json:"bargain_self_cut_max" example:"1"`
+	BargainNewCutMode          uint8    `json:"bargain_new_cut_mode" example:"1"`
 	BargainNewMin              float64  `json:"bargain_new_min" example:"1"`
 	BargainNewMax              float64  `json:"bargain_new_max" example:"5"`
+	BargainOldCutMode          uint8    `json:"bargain_old_cut_mode" example:"1"`
 	BargainOldMin              float64  `json:"bargain_old_min" example:"0.1"`
 	BargainOldMax              float64  `json:"bargain_old_max" example:"1"`
 	GroupBuyPrice              *float64 `json:"group_buy_price"`
@@ -103,8 +105,10 @@ type activityProductAddBody struct {
 	BargainNewUserHours        FlexUInt32     `json:"bargain_new_user_hours"`
 	BargainHelpDailyMax        FlexUInt32     `json:"bargain_help_daily_max"`
 	BargainSelfCutMax          FlexFloat64    `json:"bargain_self_cut_max"`
+	BargainNewCutMode          FlexUInt8      `json:"bargain_new_cut_mode"`
 	BargainNewMin              FlexFloat64    `json:"bargain_new_min"`
 	BargainNewMax              FlexFloat64    `json:"bargain_new_max"`
+	BargainOldCutMode          FlexUInt8      `json:"bargain_old_cut_mode"`
 	BargainOldMin              FlexFloat64    `json:"bargain_old_min"`
 	BargainOldMax              FlexFloat64    `json:"bargain_old_max"`
 	GroupBuyPrice              FlexFloat64Ptr `json:"group_buy_price"`
@@ -152,10 +156,11 @@ func parseActivityProductAddBody(c *gin.Context) (ActivityProductRequest, error)
 		EnableGroupBuy: raw.EnableGroupBuy.Uint8(), EnableBargain: raw.EnableBargain.Uint8(),
 		BargainFloorPrice: raw.BargainFloorPrice.Ptr(), BargainDurationHours: raw.BargainDurationHours.Uint32(),
 		BargainNewUserHours: raw.BargainNewUserHours.Uint32(), BargainHelpDailyMax: raw.BargainHelpDailyMax.Uint32(),
-		BargainSelfCutMax: raw.BargainSelfCutMax.Float64(), BargainNewMin: raw.BargainNewMin.Float64(),
-		BargainNewMax: raw.BargainNewMax.Float64(), BargainOldMin: raw.BargainOldMin.Float64(),
-		BargainOldMax: raw.BargainOldMax.Float64(),
-		GroupBuyPrice: raw.GroupBuyPrice.Ptr(),
+		BargainSelfCutMax: raw.BargainSelfCutMax.Float64(),
+		BargainNewCutMode: raw.BargainNewCutMode.Uint8(), BargainNewMin: raw.BargainNewMin.Float64(),
+		BargainNewMax: raw.BargainNewMax.Float64(), BargainOldCutMode: raw.BargainOldCutMode.Uint8(),
+		BargainOldMin: raw.BargainOldMin.Float64(), BargainOldMax: raw.BargainOldMax.Float64(),
+		GroupBuyPrice:       raw.GroupBuyPrice.Ptr(),
 		GroupBuyTargetCount: raw.GroupBuyTargetCount.Ptr(), GroupBuyAllowRepeat: raw.GroupBuyAllowRepeat.Uint8(),
 		GroupBuyMaxJoinsPerUser:    raw.GroupBuyMaxJoinsPerUser.Uint32(),
 		GroupBuyMaxConcurrentTeams: raw.GroupBuyMaxConcurrentTeams.Uint32(),
@@ -189,8 +194,10 @@ type activityProductUpdateBody struct {
 	BargainNewUserHours        FlexUInt32Ptr      `json:"bargain_new_user_hours"`
 	BargainHelpDailyMax        FlexUInt32Ptr      `json:"bargain_help_daily_max"`
 	BargainSelfCutMax          FlexFloat64Ptr     `json:"bargain_self_cut_max"`
+	BargainNewCutMode          FlexUInt8Ptr       `json:"bargain_new_cut_mode"`
 	BargainNewMin              FlexFloat64Ptr     `json:"bargain_new_min"`
 	BargainNewMax              FlexFloat64Ptr     `json:"bargain_new_max"`
+	BargainOldCutMode          FlexUInt8Ptr       `json:"bargain_old_cut_mode"`
 	BargainOldMin              FlexFloat64Ptr     `json:"bargain_old_min"`
 	BargainOldMax              FlexFloat64Ptr     `json:"bargain_old_max"`
 	GroupBuyPrice              FlexFloat64Ptr     `json:"group_buy_price"`
@@ -220,10 +227,11 @@ func parseActivityProductUpdateBody(c *gin.Context) (UpdateActivityProductReques
 		EnableGroupBuy: raw.EnableGroupBuy.Ptr(), EnableBargain: raw.EnableBargain.Ptr(),
 		BargainFloorPrice: raw.BargainFloorPrice.Ptr(), BargainDurationHours: raw.BargainDurationHours.Ptr(),
 		BargainNewUserHours: raw.BargainNewUserHours.Ptr(), BargainHelpDailyMax: raw.BargainHelpDailyMax.Ptr(),
-		BargainSelfCutMax: raw.BargainSelfCutMax.Ptr(), BargainNewMin: raw.BargainNewMin.Ptr(),
-		BargainNewMax: raw.BargainNewMax.Ptr(), BargainOldMin: raw.BargainOldMin.Ptr(),
-		BargainOldMax: raw.BargainOldMax.Ptr(),
-		GroupBuyPrice: raw.GroupBuyPrice.Ptr(),
+		BargainSelfCutMax: raw.BargainSelfCutMax.Ptr(), BargainNewCutMode: raw.BargainNewCutMode.Ptr(),
+		BargainNewMin: raw.BargainNewMin.Ptr(), BargainNewMax: raw.BargainNewMax.Ptr(),
+		BargainOldCutMode: raw.BargainOldCutMode.Ptr(), BargainOldMin: raw.BargainOldMin.Ptr(),
+		BargainOldMax:       raw.BargainOldMax.Ptr(),
+		GroupBuyPrice:       raw.GroupBuyPrice.Ptr(),
 		GroupBuyTargetCount: raw.GroupBuyTargetCount.Ptr(), GroupBuyAllowRepeat: raw.GroupBuyAllowRepeat.Ptr(),
 		GroupBuyMaxJoinsPerUser:    raw.GroupBuyMaxJoinsPerUser.Ptr(),
 		GroupBuyMaxConcurrentTeams: raw.GroupBuyMaxConcurrentTeams.Ptr(),
@@ -257,8 +265,10 @@ type UpdateActivityProductRequest struct {
 	BargainNewUserHours        *uint32  `json:"bargain_new_user_hours"`
 	BargainHelpDailyMax        *uint32  `json:"bargain_help_daily_max"`
 	BargainSelfCutMax          *float64 `json:"bargain_self_cut_max"`
+	BargainNewCutMode          *uint8   `json:"bargain_new_cut_mode"`
 	BargainNewMin              *float64 `json:"bargain_new_min"`
 	BargainNewMax              *float64 `json:"bargain_new_max"`
+	BargainOldCutMode          *uint8   `json:"bargain_old_cut_mode"`
 	BargainOldMin              *float64 `json:"bargain_old_min"`
 	BargainOldMax              *float64 `json:"bargain_old_max"`
 	GroupBuyPrice              *float64 `json:"group_buy_price" example:"7.9"`
@@ -297,9 +307,9 @@ func toActivityProductInput(req ActivityProductRequest) service.ActivityProductI
 		EnableBargain:  req.EnableBargain, BargainFloorPrice: req.BargainFloorPrice,
 		BargainDurationHours: req.BargainDurationHours, BargainNewUserHours: req.BargainNewUserHours,
 		BargainHelpDailyMax: req.BargainHelpDailyMax, BargainSelfCutMax: req.BargainSelfCutMax,
-		BargainNewMin: req.BargainNewMin, BargainNewMax: req.BargainNewMax,
-		BargainOldMin: req.BargainOldMin, BargainOldMax: req.BargainOldMax,
-		GroupBuyPrice:  req.GroupBuyPrice, GroupBuyTargetCount: req.GroupBuyTargetCount,
+		BargainNewCutMode: req.BargainNewCutMode, BargainNewMin: req.BargainNewMin, BargainNewMax: req.BargainNewMax,
+		BargainOldCutMode: req.BargainOldCutMode, BargainOldMin: req.BargainOldMin, BargainOldMax: req.BargainOldMax,
+		GroupBuyPrice: req.GroupBuyPrice, GroupBuyTargetCount: req.GroupBuyTargetCount,
 		GroupBuyAllowRepeat:        req.GroupBuyAllowRepeat,
 		GroupBuyMaxJoinsPerUser:    req.GroupBuyMaxJoinsPerUser,
 		GroupBuyMaxConcurrentTeams: req.GroupBuyMaxConcurrentTeams,
@@ -320,9 +330,10 @@ func toActivityProductPatch(req UpdateActivityProductRequest) service.UpdateActi
 		EnableGroupBuy: req.EnableGroupBuy, EnableBargain: req.EnableBargain,
 		BargainFloorPrice: req.BargainFloorPrice, BargainDurationHours: req.BargainDurationHours,
 		BargainNewUserHours: req.BargainNewUserHours, BargainHelpDailyMax: req.BargainHelpDailyMax,
-		BargainSelfCutMax: req.BargainSelfCutMax, BargainNewMin: req.BargainNewMin,
-		BargainNewMax: req.BargainNewMax, BargainOldMin: req.BargainOldMin, BargainOldMax: req.BargainOldMax,
-		GroupBuyPrice: req.GroupBuyPrice,
+		BargainSelfCutMax: req.BargainSelfCutMax, BargainNewCutMode: req.BargainNewCutMode,
+		BargainNewMin: req.BargainNewMin, BargainNewMax: req.BargainNewMax,
+		BargainOldCutMode: req.BargainOldCutMode, BargainOldMin: req.BargainOldMin, BargainOldMax: req.BargainOldMax,
+		GroupBuyPrice:       req.GroupBuyPrice,
 		GroupBuyTargetCount: req.GroupBuyTargetCount, GroupBuyAllowRepeat: req.GroupBuyAllowRepeat,
 		GroupBuyMaxJoinsPerUser:    req.GroupBuyMaxJoinsPerUser,
 		GroupBuyMaxConcurrentTeams: req.GroupBuyMaxConcurrentTeams,
