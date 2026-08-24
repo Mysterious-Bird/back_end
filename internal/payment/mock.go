@@ -217,6 +217,10 @@ func (p *MockProvider) applyRefundAmount(tx *gorm.DB, payStatus uint8, payAmount
 		if remain < 0 {
 			remain = 0
 		}
+		// 零元已付单：本地记已退款（无实付可退）
+		if payAmount <= 0.009 {
+			return apply(0, model.PayStatusRefunded, 0)
+		}
 		refund := amount
 		if refund <= 0 || refund >= remain {
 			refund = remain

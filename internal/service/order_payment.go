@@ -23,7 +23,42 @@ func (s *OrderService) settlePaymentInTx(tx *gorm.DB, orderID uint64, payAmount 
 		}
 		return s.advanceAfterPaidInTx(tx, orderID)
 	}
-	// wechat：不结算，订单保留 PendingPay，交由 CreatePrepay + HandleNotify 推进
+	// 零元单（砍价到底价 0 / 优惠券抵扣至 0）：微信无法下单 amount=0，本地免支付并推进履约
+	if isZeroMoney(payAmount) {
+		if err := markOrderPaidLocalInTx(tx, orderID, at); err != nil {
+			return err
+		}
+		return s.advanceAfterPaidInTx(tx, orderID)
+	}
+	// wechat：正价不结算，订单保留 PendingPay，交由 CreatePrepay + HandleNotify 推进
+	return nil
+}
+
+// markOrderPaidLocalInTx 本地标记入包订单已支付（零元免支付；不经微信回调）。
+func markOrderPaidLocalInTx(tx *gorm.DB, orderID uint64, at time.Time) error {
+	if orderID == 0 {
+		return fmt.Errorf("invalid order id")
+	}
+	res := query.NotDeleted(tx.Model(&model.Order{})).
+		Where("id = ? AND pay_status = ?", orderID, model.PayStatusUnpaid).
+		Updates(map[string]interface{}{
+			"pay_status": model.PayStatusPaid,
+			"paid_at":    at,
+			"prepay_id":  nil,
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		var o model.Order
+		if err := query.NotDeleted(tx).Select("id", "pay_status").First(&o, orderID).Error; err != nil {
+			return err
+		}
+		if o.PayStatus == model.PayStatusPaid {
+			return nil
+		}
+		return fmt.Errorf("order %d pay status not unpaid", orderID)
+	}
 	return nil
 }
 

@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -121,7 +122,7 @@ func (s *UserService) GetProfile(accountID uint64) (*ProfileDetail, error) {
 	}, nil
 }
 
-// ListUsersForAdmin 管理端用户列表（type=1）。
+// ListUsersForAdmin 管理端账号列表（默认含普通用户、商家、管理员；含已删除）。
 func (s *UserService) ListUsersForAdmin(page, pageSize int, keyword string) ([]model.Account, int64, error) {
 	if page < 1 {
 		page = 1
@@ -134,11 +135,21 @@ func (s *UserService) ListUsersForAdmin(page, pageSize int, keyword string) ([]m
 	}
 	offset := (page - 1) * pageSize
 
-	q := query.NotDeleted(s.DB.Model(&model.Account{})).Where("type = ?", model.AccountTypeUser)
+	q := s.DB.Model(&model.Account{})
 	keyword = strings.TrimSpace(keyword)
 	if keyword != "" {
-		like := "%" + keyword + "%"
-		q = q.Where("nickname LIKE ? OR phone LIKE ? OR CAST(id AS CHAR) LIKE ?", like, like, like)
+		if id, err := strconv.ParseUint(keyword, 10, 64); err == nil {
+			// 短数字按 ID 精确查（便于找 7/8/9 等）；长数字兼搜手机号。
+			if len(keyword) <= 6 {
+				q = q.Where("id = ?", id)
+			} else {
+				like := "%" + keyword + "%"
+				q = q.Where("id = ? OR phone LIKE ?", id, like)
+			}
+		} else {
+			like := "%" + keyword + "%"
+			q = q.Where("nickname LIKE ? OR phone LIKE ? OR CAST(id AS CHAR) LIKE ?", like, like, like)
+		}
 	}
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
@@ -156,6 +167,8 @@ type AdminUserView struct {
 	model.Account
 	StatusText string `json:"status_text"`
 	GenderText string `json:"gender_text"`
+	TypeText   string `json:"type_text"`
+	IsDeleted  bool   `json:"is_deleted"`
 }
 
 func toAdminUserView(a model.Account) AdminUserView {
@@ -170,6 +183,8 @@ func toAdminUserView(a model.Account) AdminUserView {
 		Account:    a,
 		StatusText: model.AccountStatusText(a.Status),
 		GenderText: gender,
+		TypeText:   model.AccountTypeText(a.Type),
+		IsDeleted:  a.IsDeleted == model.Deleted,
 	}
 }
 

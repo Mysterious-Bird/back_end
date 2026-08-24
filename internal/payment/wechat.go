@@ -100,6 +100,32 @@ func (p *WeChatProvider) createOrderPrepay(sub PaySubject) (*PrepayResult, error
 			Message: "订单已支付"}, nil
 	}
 
+	// 零元单：微信 JSAPI 要求金额 > 0，本地免支付并推进履约（兼容历史未结清的 0 元待支付单）
+	if order.PayAmount <= 0.009 {
+		at := time.Now()
+		err := p.DB.Transaction(func(tx *gorm.DB) error {
+			res := query.NotDeleted(tx.Model(&model.Order{})).
+				Where("id = ? AND pay_status = ?", orderID, model.PayStatusUnpaid).
+				Updates(map[string]interface{}{
+					"pay_status": model.PayStatusPaid,
+					"paid_at":    at,
+					"prepay_id":  nil,
+				})
+			if res.Error != nil {
+				return res.Error
+			}
+			if p.OnPaidInTx != nil {
+				return p.OnPaidInTx(tx, orderID)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("零元订单免支付失败: %w", err)
+		}
+		return &PrepayResult{Provider: p.Name(), AlreadyPaid: true, NeedPay: false,
+			Message: "零元订单已免支付"}, nil
+	}
+
 	// 2. 幂等：已有成功流水则直接返回（含迁移前 subject_id=0 的 legacy 行）
 	var existingTx model.PaymentTransaction
 	err := paidTransactionBySubject(p.DB, model.PaySubjectOrder, orderID).
@@ -864,6 +890,25 @@ func (p *WeChatProvider) refundOrderAmountInTx(tx *gorm.DB, sub PaySubject, amou
 		return nil
 	case model.PayStatusPaid, model.PayStatusRefunding, model.PayStatusPartialRefunded:
 		remain := refundableRemain(order)
+		// 零元已付单：无微信流水可退，本地记已退款（背包件数由业务层回滚）
+		if order.PayAmount <= 0.009 {
+			res := optimisticRefundWhere(
+				query.NotDeleted(tx.Model(&model.Order{})),
+				order.ID, order.PayStatus, order.RefundedAmount, order.RefundPendingAmount,
+			).Updates(map[string]interface{}{
+				"pay_status":            model.PayStatusRefunded,
+				"refunded_amount":       0,
+				"refund_pending_amount": 0,
+				"status":                model.OrderStatusRefunded,
+			})
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected == 0 {
+				return fmtRefundConflict(order.ID)
+			}
+			return nil
+		}
 		refund := amount
 		if refund <= 0 || refund >= remain {
 			refund = remain

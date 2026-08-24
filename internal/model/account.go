@@ -26,6 +26,21 @@ func AccountStatusText(status uint8) string {
 	}
 }
 
+func AccountTypeText(accountType uint8) string {
+	switch accountType {
+	case AccountTypeUser:
+		return "普通用户"
+	case AccountTypeMerchant:
+		return "商家"
+	case AccountTypeAdmin:
+		return "管理员"
+	case AccountTypeRider:
+		return "骑手"
+	default:
+		return "未知"
+	}
+}
+
 type Account struct {
 	ID           uint64     `gorm:"primaryKey" json:"id"`
 	Type         uint8      `gorm:"not null" json:"type"`

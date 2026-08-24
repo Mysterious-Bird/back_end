@@ -228,13 +228,89 @@ func (s *OrderService) RefundPendingVerifyUsage(accountID, usageID uint64) (*Inv
 	return s.RefundPendingVerifyUsageWithReason(accountID, usageID, "待核销退款")
 }
 
+type pendingVerifyRefundOpts struct {
+	reason         string
+	allowedStatuses []uint8
+	allowGroupBuy  bool
+}
+
 // RefundPendingVerifyUsageWithReason 同 RefundPendingVerifyUsage，可自定义取消原因（如过期自动退款）。
 func (s *OrderService) RefundPendingVerifyUsageWithReason(accountID, usageID uint64, reason string) (*InventoryRefundView, error) {
+	if strings.TrimSpace(reason) == "" {
+		reason = "待核销退款"
+	}
+	return s.refundPendingVerifyUsage(accountID, usageID, pendingVerifyRefundOpts{
+		reason:         reason,
+		allowedStatuses: []uint8{model.InventoryUsagePendingVerify},
+		allowGroupBuy:  false,
+	})
+}
+
+// AdminApproveExpireRefund 管理员通过拼团过期退款审核（可绕过「成团后不可自行退款」）。
+func (s *OrderService) AdminApproveExpireRefund(usageID uint64) (*InventoryRefundView, error) {
+	var usage model.UserInventoryUsage
+	if err := query.NotDeleted(s.DB).Select("id", "account_id", "status").First(&usage, usageID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrInventoryUsageNotFound
+		}
+		return nil, err
+	}
+	if usage.Status != model.InventoryUsageRefundReview {
+		return nil, fmt.Errorf("%w: 仅退款待审核可操作", ErrInventoryRefundInvalid)
+	}
+	return s.refundPendingVerifyUsage(usage.AccountID, usageID, pendingVerifyRefundOpts{
+		reason:         "管理员审核通过：过期退款",
+		allowedStatuses: []uint8{model.InventoryUsageRefundReview},
+		allowGroupBuy:  true,
+	})
+}
+
+// AdminRejectExpireRefund 管理员拒绝过期退款：作废核销码、取消 usage，不退款、不回背包。
+func (s *OrderService) AdminRejectExpireRefund(usageID uint64, remark string) error {
+	reason := "管理员拒绝过期退款（作废不退）"
+	if r := strings.TrimSpace(remark); r != "" {
+		reason = reason + "：" + r
+	}
+	return s.runTx(func(tx *gorm.DB) error {
+		var usage model.UserInventoryUsage
+		if err := query.NotDeleted(tx.Clauses(clause.Locking{Strength: "UPDATE"})).
+			Where("id = ?", usageID).
+			First(&usage).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrInventoryUsageNotFound
+			}
+			return err
+		}
+		if usage.Status != model.InventoryUsageRefundReview {
+			return fmt.Errorf("%w: 仅退款待审核可操作", ErrInventoryRefundInvalid)
+		}
+		now := time.Now()
+		if err := tx.Model(&model.VerificationCode{}).
+			Where("inventory_usage_id = ? AND status = ?", usage.ID, model.VerificationCodeUnused).
+			Updates(map[string]interface{}{"status": model.VerificationCodeExpired, "used_at": now}).Error; err != nil {
+			return err
+		}
+		if err := InvalidateVerificationRecordsForUsage(tx, usage.ID); err != nil {
+			return err
+		}
+		return tx.Model(&usage).Updates(map[string]interface{}{
+			"status":        model.InventoryUsageCancelled,
+			"cancel_reason": reason,
+		}).Error
+	})
+}
+
+func (s *OrderService) refundPendingVerifyUsage(accountID, usageID uint64, opts pendingVerifyRefundOpts) (*InventoryRefundView, error) {
 	if s.InventorySvc == nil {
 		return nil, fmt.Errorf("inventory service unavailable")
 	}
-	if strings.TrimSpace(reason) == "" {
+	reason := strings.TrimSpace(opts.reason)
+	if reason == "" {
 		reason = "待核销退款"
+	}
+	allowed := opts.allowedStatuses
+	if len(allowed) == 0 {
+		allowed = []uint8{model.InventoryUsagePendingVerify}
 	}
 	var result InventoryRefundView
 	err := s.runTx(func(tx *gorm.DB) error {
@@ -247,8 +323,15 @@ func (s *OrderService) RefundPendingVerifyUsageWithReason(accountID, usageID uin
 			}
 			return err
 		}
-		if usage.Status != model.InventoryUsagePendingVerify {
-			return fmt.Errorf("%w: 仅待核销可申请退款", ErrInventoryRefundInvalid)
+		statusOK := false
+		for _, st := range allowed {
+			if usage.Status == st {
+				statusOK = true
+				break
+			}
+		}
+		if !statusOK {
+			return fmt.Errorf("%w: 当前状态不可退款", ErrInventoryRefundInvalid)
 		}
 		if usage.DeliveryType != model.DeliveryTypePickup {
 			return fmt.Errorf("%w: 仅自取待核销可退款", ErrInventoryRefundInvalid)
@@ -262,7 +345,7 @@ func (s *OrderService) RefundPendingVerifyUsageWithReason(accountID, usageID uin
 			return err
 		}
 
-		allocs, err := allocatePendingVerifyRefund(tx, &usage, inv.ProductID, inv.Spec, !s.paymentProvider().ImmediateSettle())
+		allocs, err := allocatePendingVerifyRefund(tx, &usage, inv.ProductID, inv.Spec, !s.paymentProvider().ImmediateSettle(), opts.allowGroupBuy)
 		if err != nil {
 			return err
 		}
@@ -351,7 +434,8 @@ func (s *OrderService) RefundPendingVerifyUsageWithReason(accountID, usageID uin
 }
 
 // allocatePendingVerifyRefund 按 usage 关联的 use 流水分摊退款（不依赖背包净余额）。
-func allocatePendingVerifyRefund(tx *gorm.DB, usage *model.UserInventoryUsage, productID uint64, spec string, requirePayTx bool) ([]refundAlloc, error) {
+// allowGroupBuy=true 时允许管理员审核通过拼团过期退款。
+func allocatePendingVerifyRefund(tx *gorm.DB, usage *model.UserInventoryUsage, productID uint64, spec string, requirePayTx, allowGroupBuy bool) ([]refundAlloc, error) {
 	var useLogs []model.UserInventoryLog
 	if err := query.NotDeleted(tx).
 		Where("usage_id = ? AND event_type = ? AND delta_qty < 0", usage.ID, model.InventoryEventUse).
@@ -408,21 +492,21 @@ func allocatePendingVerifyRefund(tx *gorm.DB, usage *model.UserInventoryUsage, p
 	out := make([]refundAlloc, 0, len(orderSeq))
 	for _, oid := range orderSeq {
 		qty := merged[oid]
-		if requirePayTx && !orderHasPaidPaymentTx(tx, oid) {
+		if requirePayTx && !orderAllowsRefundSource(tx, oid) {
 			return nil, fmt.Errorf("%w: 该来源订单无微信支付流水，不可退款", ErrInventoryRefundInvalid)
 		}
 		meta, err := loadOrderRefundMeta(tx, oid, productID, spec)
 		if err != nil {
 			return nil, err
 		}
-		if isGroupBuyPurchaseType(meta.PurchaseType) {
+		if isGroupBuyPurchaseType(meta.PurchaseType) && !allowGroupBuy {
 			return nil, errGroupBuyNoSelfRefund()
 		}
 		takeQty, amount, err := planOrderItemRefundWithMeta(meta, qty)
 		if err != nil {
 			return nil, err
 		}
-		if takeQty != qty || amount <= 0 {
+		if takeQty != qty || !refundAmountAcceptable(meta, amount) {
 			return nil, fmt.Errorf("%w: 订单可退余额不足", ErrInventoryRefundInvalid)
 		}
 		out = append(out, refundAlloc{OrderID: oid, Quantity: takeQty, Amount: amount})
@@ -480,10 +564,10 @@ func listRefundBatches(db *gorm.DB, accountID, productID uint64, spec string, in
 			// 该来源暂不可退（支付态/余额），跳过
 			continue
 		}
-		if requirePayTx && !orderHasPaidPaymentTx(db, oid) {
+		if requirePayTx && !orderAllowsRefundSource(db, oid) {
 			continue
 		}
-		if takeQty == 0 {
+		if takeQty == 0 || !refundAmountAcceptable(meta, amount) {
 			continue
 		}
 		out = append(out, refundBatch{
@@ -526,7 +610,7 @@ func allocateInventoryRefundItems(tx *gorm.DB, accountID, productID uint64, spec
 		if int32(it.Quantity) > remain {
 			return nil, fmt.Errorf("%w: 该来源可退数量不足", ErrInventoryRefundInvalid)
 		}
-		if requirePayTx && !orderHasPaidPaymentTx(tx, it.OrderID) {
+		if requirePayTx && !orderAllowsRefundSource(tx, it.OrderID) {
 			return nil, fmt.Errorf("%w: 该来源订单无微信支付流水，不可退款", ErrInventoryRefundInvalid)
 		}
 		meta, metaErr := loadOrderRefundMeta(tx, it.OrderID, productID, spec)
@@ -540,7 +624,7 @@ func allocateInventoryRefundItems(tx *gorm.DB, accountID, productID uint64, spec
 		if err != nil {
 			return nil, err
 		}
-		if takeQty != it.Quantity || amount <= 0 {
+		if takeQty != it.Quantity || !refundAmountAcceptable(meta, amount) {
 			return nil, fmt.Errorf("%w: 订单可退余额不足", ErrInventoryRefundInvalid)
 		}
 		out = append(out, refundAlloc{OrderID: it.OrderID, Quantity: takeQty, Amount: amount})
@@ -577,7 +661,7 @@ func allocateInventoryRefund(tx *gorm.DB, accountID, productID uint64, spec stri
 		if take > need {
 			take = need
 		}
-		if requirePayTx && !orderHasPaidPaymentTx(tx, oid) {
+		if requirePayTx && !orderAllowsRefundSource(tx, oid) {
 			return nil, fmt.Errorf("%w: 该来源订单无微信支付流水，不可退款", ErrInventoryRefundInvalid)
 		}
 		meta, metaErr := loadOrderRefundMeta(tx, oid, productID, spec)
@@ -591,7 +675,7 @@ func allocateInventoryRefund(tx *gorm.DB, accountID, productID uint64, spec stri
 		if err != nil {
 			return nil, err
 		}
-		if takeQty == 0 || amount <= 0 {
+		if takeQty == 0 || !refundAmountAcceptable(meta, amount) {
 			return nil, fmt.Errorf("%w: 订单可退余额不足", ErrInventoryRefundInvalid)
 		}
 		out = append(out, refundAlloc{OrderID: oid, Quantity: takeQty, Amount: amount})
@@ -624,7 +708,7 @@ func allocateInventoryRefund(tx *gorm.DB, accountID, productID uint64, spec stri
 		if take > need {
 			take = need
 		}
-		if requirePayTx && !orderHasPaidPaymentTx(tx, oid) {
+		if requirePayTx && !orderAllowsRefundSource(tx, oid) {
 			continue
 		}
 		meta, metaErr := loadOrderRefundMeta(tx, oid, productID, spec)
@@ -633,7 +717,7 @@ func allocateInventoryRefund(tx *gorm.DB, accountID, productID uint64, spec stri
 			continue
 		}
 		takeQty, amount, err := planOrderItemRefundWithMeta(meta, uint32(take))
-		if err != nil || takeQty == 0 || amount <= 0 {
+		if err != nil || takeQty == 0 || !refundAmountAcceptable(meta, amount) {
 			// 与 listRefundBatches 一致：跳过暂不可退来源，继续下一笔
 			continue
 		}
@@ -987,7 +1071,57 @@ func orderHasPaidPaymentTx(db *gorm.DB, orderID uint64) bool {
 	return n > 0
 }
 
+// isZeroMoney 金额视为 0（分以下忽略）。
+func isZeroMoney(v float64) bool {
+	return v <= 0.009
+}
+
+// orderIsZeroPaySettled 零元已结清订单（无微信流水，可本地退件数）。
+func orderIsZeroPaySettled(db *gorm.DB, orderID uint64) bool {
+	var o model.Order
+	if err := query.NotDeleted(db).Select("pay_amount", "pay_status").First(&o, orderID).Error; err != nil {
+		return false
+	}
+	if !isZeroMoney(o.PayAmount) {
+		return false
+	}
+	switch o.PayStatus {
+	case model.PayStatusPaid, model.PayStatusPartialRefunded, model.PayStatusRefunding, model.PayStatusRefunded:
+		return true
+	default:
+		return false
+	}
+}
+
+// orderAllowsRefundSource 正式微信支付下：有流水，或零元免支付已结清。
+func orderAllowsRefundSource(db *gorm.DB, orderID uint64) bool {
+	return orderHasPaidPaymentTx(db, orderID) || orderIsZeroPaySettled(db, orderID)
+}
+
+// refundAmountAcceptable 正价须 amount>0；零元单允许 amount=0。
+func refundAmountAcceptable(meta *orderRefundMeta, amount float64) bool {
+	if amount > 0.009 {
+		return true
+	}
+	return meta != nil && isZeroMoney(meta.PayAmount) && amount >= -1e-9
+}
+
 func planOrderItemRefundWithMeta(meta *orderRefundMeta, qty uint32) (uint32, float64, error) {
+	if meta == nil {
+		return 0, 0, fmt.Errorf("%w: 订单元数据缺失", ErrInventoryRefundInvalid)
+	}
+	// 零元单：按件数退库存，金额恒为 0；已标退款也可继续退剩余件数
+	if isZeroMoney(meta.PayAmount) {
+		switch meta.PayStatus {
+		case model.PayStatusPaid, model.PayStatusPartialRefunded, model.PayStatusRefunding, model.PayStatusRefunded:
+		default:
+			return 0, 0, fmt.Errorf("%w: 订单支付状态不可退款", ErrInventoryRefundInvalid)
+		}
+		if qty == 0 {
+			return 0, 0, fmt.Errorf("%w: 订单可退余额不足", ErrInventoryRefundInvalid)
+		}
+		return qty, 0, nil
+	}
 	if meta.PayStatus != model.PayStatusPaid && meta.PayStatus != model.PayStatusPartialRefunded && meta.PayStatus != model.PayStatusRefunding {
 		return 0, 0, fmt.Errorf("%w: 订单支付状态不可退款", ErrInventoryRefundInvalid)
 	}
@@ -1012,3 +1146,63 @@ func planOrderItemRefundWithMeta(meta *orderRefundMeta, qty uint32) (uint32, flo
 	}
 	return qty, amount, nil
 }
+
+// ExpireRefundReviewView 拼团过期退款待审核条目。
+type ExpireRefundReviewView struct {
+	InventoryUsageView
+	EstimatedRefund float64 `json:"estimated_refund"`
+	OrderNo         string  `json:"order_no,omitempty"`
+	OrderID         uint64  `json:"order_id,omitempty"`
+}
+
+// CountExpireRefundReviews 待审核过期退款数量（管理端角标）。
+func (s *OrderService) CountExpireRefundReviews() (int64, error) {
+	var n int64
+	err := query.NotDeleted(s.DB.Model(&model.UserInventoryUsage{})).
+		Where("status = ?", model.InventoryUsageRefundReview).
+		Count(&n).Error
+	return n, err
+}
+
+// ListExpireRefundReviews 列出拼团过期退款待审核。
+func (s *OrderService) ListExpireRefundReviews(page, pageSize int) ([]ExpireRefundReviewView, int64, error) {
+	if s.InventorySvc == nil {
+		return nil, 0, fmt.Errorf("inventory service unavailable")
+	}
+	st := model.InventoryUsageRefundReview
+	usages, total, err := s.InventorySvc.ListUsagesForAdmin(nil, &st, page, pageSize, "", nil, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make([]ExpireRefundReviewView, 0, len(usages))
+	for i := range usages {
+		item := ExpireRefundReviewView{InventoryUsageView: usages[i]}
+		var inv model.UserInventory
+		if err := query.NotDeleted(s.DB).Select("id", "product_id", "spec").
+			First(&inv, usages[i].InventoryID).Error; err == nil {
+			allocs, allocErr := allocatePendingVerifyRefund(s.DB, &usages[i].UserInventoryUsage, inv.ProductID, inv.Spec, false, true)
+			if allocErr == nil {
+				var sum float64
+				for _, a := range allocs {
+					sum += a.Amount
+					if item.OrderID == 0 {
+						item.OrderID = a.OrderID
+					}
+				}
+				item.EstimatedRefund = math.Round(sum*100) / 100
+			}
+		}
+		if item.OrderID == 0 && usages[i].SourceOrderID != nil {
+			item.OrderID = *usages[i].SourceOrderID
+		}
+		if item.OrderID > 0 {
+			var o model.Order
+			if e := query.NotDeleted(s.DB).Select("order_no").First(&o, item.OrderID).Error; e == nil {
+				item.OrderNo = o.OrderNo
+			}
+		}
+		out = append(out, item)
+	}
+	return out, total, nil
+}
+

@@ -135,7 +135,7 @@ func validateBargainOnActivityProduct(input ActivityProductInput) error {
 	if input.EnableGroupBuy == 1 {
 		return fmt.Errorf("%w: 砍价与拼团不能同时开启", ErrInvalidProductArg)
 	}
-	if input.BargainFloorPrice == nil || *input.BargainFloorPrice <= 0 {
+	if input.BargainFloorPrice == nil || *input.BargainFloorPrice < 0 {
 		return fmt.Errorf("%w: bargain_floor_price", ErrInvalidProductArg)
 	}
 	if *input.BargainFloorPrice >= input.ActivityPrice {

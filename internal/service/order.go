@@ -1136,6 +1136,14 @@ func applyStatusCodeFilter(q *gorm.DB, code string) {
 		q.Where("status = ?", model.OrderStatusClosed)
 	case "preparing":
 		q.Where("status = ?", model.OrderStatusPreparing)
+	case "refunded":
+		// 已退款 / 部分退款 / 退款中（记录查询「已退款」）
+		// 勿用 []uint8：GORM 会当成 binary 导致 SQL 语法错误
+		q.Where("refunded_amount > 0 OR pay_status IN (?, ?, ?)",
+			model.PayStatusRefunding, model.PayStatusRefunded, model.PayStatusPartialRefunded)
+	case "partial_refunded":
+		q.Where("pay_status = ? OR (refunded_amount > 0 AND refunded_amount + 0.0001 < pay_amount)",
+			model.PayStatusPartialRefunded)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"yujixinjiang/backend/internal/query"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // normalizeExpireDays 0/nil → 永不过期（返回 nil）。
@@ -83,7 +84,69 @@ func resolveProductChannelExpireAt(tx *gorm.DB, productID uint64, purchaseType u
 	return &exp, nil
 }
 
-// ExpireStalePendingVerifyUsages 扫描已过期的自取待核销并自动退款。
+// usageIsGroupBuyPurchase 判断待核销 usage 是否来自拼团成团订单。
+func usageIsGroupBuyPurchase(db *gorm.DB, usage *model.UserInventoryUsage) (bool, error) {
+	orderID := uint64(0)
+	if usage.SourceOrderID != nil {
+		orderID = *usage.SourceOrderID
+	}
+	if orderID == 0 {
+		var oid uint64
+		if err := query.NotDeleted(db.Model(&model.UserInventoryLog{})).
+			Select("order_id").
+			Where("usage_id = ? AND event_type = ? AND order_id IS NOT NULL AND order_id > 0",
+				usage.ID, model.InventoryEventUse).
+			Order("id ASC").
+			Limit(1).
+			Scan(&oid).Error; err != nil {
+			return false, err
+		}
+		orderID = oid
+	}
+	if orderID == 0 {
+		return false, nil
+	}
+	var purchaseType uint8
+	err := query.NotDeleted(db.Model(&model.OrderItem{})).
+		Select("purchase_type").
+		Where("order_id = ? AND product_id = ?", orderID, usage.ProductID).
+		Order("id ASC").
+		Limit(1).
+		Scan(&purchaseType).Error
+	if err != nil {
+		return false, err
+	}
+	return isGroupBuyPurchaseType(purchaseType), nil
+}
+
+// markUsageExpireRefundReview 拼团过期：作废核销码并进入管理员退款审核（不自动退款）。
+func (s *OrderService) markUsageExpireRefundReview(usage *model.UserInventoryUsage) error {
+	reason := "商品已过期待退款审核"
+	return s.DB.Transaction(func(tx *gorm.DB) error {
+		var locked model.UserInventoryUsage
+		if err := query.NotDeleted(tx.Clauses(clause.Locking{Strength: "UPDATE"})).
+			Where("id = ? AND status = ?", usage.ID, model.InventoryUsagePendingVerify).
+			First(&locked).Error; err != nil {
+			return err
+		}
+		now := time.Now()
+		if err := tx.Model(&model.VerificationCode{}).
+			Where("inventory_usage_id = ? AND status = ?", locked.ID, model.VerificationCodeUnused).
+			Updates(map[string]interface{}{"status": model.VerificationCodeExpired, "used_at": now}).Error; err != nil {
+			return err
+		}
+		if err := InvalidateVerificationRecordsForUsage(tx, locked.ID); err != nil {
+			return err
+		}
+		return tx.Model(&locked).Updates(map[string]interface{}{
+			"status":        model.InventoryUsageRefundReview,
+			"cancel_reason": reason,
+		}).Error
+	})
+}
+
+// ExpireStalePendingVerifyUsages 扫描已过期的自取待核销：
+// 拼团 → 退款待审核；其它渠道 → 自动退款。
 func (s *OrderService) ExpireStalePendingVerifyUsages(now time.Time) (int, error) {
 	var list []model.UserInventoryUsage
 	if err := query.NotDeleted(s.DB).
@@ -98,6 +161,25 @@ func (s *OrderService) ExpireStalePendingVerifyUsages(now time.Time) (int, error
 	n := 0
 	for i := range list {
 		u := list[i]
+		isGroup, err := usageIsGroupBuyPurchase(s.DB, &u)
+		if err != nil {
+			log.Printf("[usage-expire] detect group-buy usage %d failed: %v", u.ID, err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("expire usage %d: %w", u.ID, err)
+			}
+			continue
+		}
+		if isGroup {
+			if err := s.markUsageExpireRefundReview(&u); err != nil {
+				log.Printf("[usage-expire] mark review usage %d failed: %v", u.ID, err)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("expire usage %d: %w", u.ID, err)
+				}
+				continue
+			}
+			n++
+			continue
+		}
 		if _, err := s.RefundPendingVerifyUsageWithReason(u.AccountID, u.ID, "商品已过期自动退款"); err != nil {
 			log.Printf("[usage-expire] refund usage %d failed: %v", u.ID, err)
 			if firstErr == nil {

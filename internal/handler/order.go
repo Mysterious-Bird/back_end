@@ -1301,6 +1301,15 @@ func (h *AdminDashboardHandler) ListOrders(c *gin.Context) {
 		}
 		buyerAccountID = &id
 	}
+	var merchantID *uint64
+	if raw := c.Query("merchant_id"); raw != "" {
+		id, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			response.BadRequest(c, "merchant_id 无效")
+			return
+		}
+		merchantID = &id
+	}
 	accountIDs, empty, err := service.FindAccountIDsByKeyword(h.OrderSvc.DB, c.Query("keyword"))
 	if err != nil {
 		response.InternalError(c, "搜索用户失败")
@@ -1315,7 +1324,7 @@ func (h *AdminDashboardHandler) ListOrders(c *gin.Context) {
 		response.BadRequest(c, "日期格式无效，请使用 YYYY-MM-DD")
 		return
 	}
-	list, total, err := h.OrderSvc.List(0, nil, page, pageSize, nil, c.Query("status_code"), buyerAccountID, accountIDs, start, end)
+	list, total, err := h.OrderSvc.List(0, merchantID, page, pageSize, nil, c.Query("status_code"), buyerAccountID, accountIDs, start, end)
 	if err != nil {
 		response.InternalError(c, "获取订单失败")
 		return
@@ -1343,6 +1352,76 @@ func (h *AdminDashboardHandler) GetOrder(c *gin.Context) {
 		return
 	}
 	response.OK(c, view)
+}
+
+type AdminRejectExpireRefundRequest struct {
+	Remark string `json:"remark"`
+}
+
+// ListExpireRefundReviews godoc
+// @Summary      拼团过期退款待审核列表（管理端）
+// @Tags         管理端-背包
+// @Produce      json
+// @Security     BearerAuth
+// @Param        page       query  int  false  "页码"
+// @Param        page_size  query  int  false  "每页条数"
+// @Success      200  {object}  response.Body{data=query.PageResult}
+// @Router       /admin/expire-refunds/pending [get]
+func (h *AdminDashboardHandler) ListExpireRefundReviews(c *gin.Context) {
+	page, pageSize := parsePage(c)
+	list, total, err := h.OrderSvc.ListExpireRefundReviews(page, pageSize)
+	if err != nil {
+		response.InternalError(c, "获取过期退款审核列表失败")
+		return
+	}
+	response.OK(c, query.PageResult{List: list, Total: total, Page: page, PageSize: pageSize})
+}
+
+// ApproveExpireRefund godoc
+// @Summary      通过拼团过期退款（管理端）
+// @Tags         管理端-背包
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id  path  int  true  "使用记录 ID"
+// @Success      200  {object}  response.Body
+// @Router       /admin/expire-refunds/{id}/approve [post]
+func (h *AdminDashboardHandler) ApproveExpireRefund(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "使用记录 ID 无效")
+		return
+	}
+	view, err := h.OrderSvc.AdminApproveExpireRefund(id)
+	if err != nil {
+		handleInventoryError(c, err)
+		return
+	}
+	response.OK(c, view)
+}
+
+// RejectExpireRefund godoc
+// @Summary      拒绝拼团过期退款（作废不退）（管理端）
+// @Tags         管理端-背包
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id    path  int                            true  "使用记录 ID"
+// @Param        body  body  AdminRejectExpireRefundRequest false "备注"
+// @Success      200  {object}  response.Body
+// @Router       /admin/expire-refunds/{id}/reject [post]
+func (h *AdminDashboardHandler) RejectExpireRefund(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "使用记录 ID 无效")
+		return
+	}
+	var req AdminRejectExpireRefundRequest
+	_ = c.ShouldBindJSON(&req)
+	if err := h.OrderSvc.AdminRejectExpireRefund(id, req.Remark); err != nil {
+		handleInventoryError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"ok": true})
 }
 
 // ListAdminVerificationRecords godoc

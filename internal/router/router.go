@@ -60,6 +60,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 	activitySvc := &service.ActivityService{DB: db}
 	announcementSvc := &service.AnnouncementService{DB: db}
 	homeCarouselSvc := &service.HomeCarouselService{DB: db}
+	homeFeaturedSvc := &service.HomeFeaturedService{DB: db}
 	bargainSvc := &service.BargainService{DB: db}
 	payProvider, err := payment.NewProvider(cfg, db)
 	if err != nil {
@@ -157,6 +158,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 		AnnouncementSvc: announcementSvc, MerchantSvc: merchantSvc,
 	}
 	homeCarouselHandler := &handler.HomeCarouselHandler{Svc: homeCarouselSvc}
+	homeFeaturedHandler := &handler.HomeFeaturedHandler{Svc: homeFeaturedSvc}
 	bargainHandler := &handler.BargainHandler{BargainSvc: bargainSvc}
 	activityHandler := &handler.ActivityHandler{
 		ActivitySvc: activitySvc, MerchantSvc: merchantSvc,
@@ -186,6 +188,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 
 		public.GET("/announcements", announcementHandler.ListPublic)
 		public.GET("/home/carousel", homeCarouselHandler.ListPublic)
+		public.GET("/home/featured", homeFeaturedHandler.ListPublic)
 		public.GET("/bargain/sessions/:id", middleware.OptionalAuth(cfg.JWT.Secret, db), bargainHandler.Get)
 		public.GET("/seckill/products", middleware.OptionalAuth(cfg.JWT.Secret, db), activityHandler.ListSeckillProducts)
 		public.GET("/rank/hot-groups", rankHandler.ListHotGroups)
@@ -241,7 +244,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 		admin.Use(middleware.RequireAccountTypes(model.AccountTypeAdmin))
 		admin.GET("/bargain-settings", bargainHandler.GetSettings)
 		admin.PATCH("/bargain-settings", bargainHandler.UpdateSettings)
-		registerAdminRoutes(admin, adminHandler, adminDashboardHandler, couponHandler, adminExtraHandler, announcementHandler, deliveryZoneHandler, activityHandler, fulfillmentEventHandler, homeCarouselHandler)
+		registerAdminRoutes(admin, adminHandler, adminDashboardHandler, couponHandler, adminExtraHandler, announcementHandler, deliveryZoneHandler, activityHandler, fulfillmentEventHandler, homeCarouselHandler, homeFeaturedHandler)
 
 		rider := authorized.Group("/rider")
 		rider.Use(middleware.RequireRider())
@@ -333,9 +336,9 @@ func startUsageExpireWorker(orderSvc *service.OrderService) {
 		run := func() {
 			n, err := orderSvc.ExpireStalePendingVerifyUsages(time.Now())
 			if err != nil {
-				log.Printf("待核销过期退款部分失败: %v (本批成功 %d)", err, n)
+				log.Printf("待核销过期处理部分失败: %v (本批成功 %d)", err, n)
 			} else if n > 0 {
-				log.Printf("待核销过期已自动退款 %d 条", n)
+				log.Printf("待核销过期已处理 %d 条（自动退款或进入退款审核）", n)
 			}
 		}
 		run()
@@ -462,7 +465,7 @@ func registerMerchantRoutes(r *gin.RouterGroup, h *handler.MerchantHandler, mo *
 	r.GET("/activities/:id/products/:activity_product_id", act.GetMerchantProduct)
 }
 
-func registerAdminRoutes(r *gin.RouterGroup, h *handler.AdminHandler, ad *handler.AdminDashboardHandler, ch *handler.CouponHandler, ae *handler.AdminExtraHandler, ah *handler.AnnouncementHandler, dz *handler.DeliveryZoneHandler, act *handler.ActivityHandler, fe *handler.FulfillmentEventHandler, hc *handler.HomeCarouselHandler) {
+func registerAdminRoutes(r *gin.RouterGroup, h *handler.AdminHandler, ad *handler.AdminDashboardHandler, ch *handler.CouponHandler, ae *handler.AdminExtraHandler, ah *handler.AnnouncementHandler, dz *handler.DeliveryZoneHandler, act *handler.ActivityHandler, fe *handler.FulfillmentEventHandler, hc *handler.HomeCarouselHandler, hf *handler.HomeFeaturedHandler) {
 	r.POST("/merchants", h.CreateMerchant)
 	r.GET("/merchants", h.ListMerchants)
 	r.GET("/merchants/:id", h.GetMerchant)
@@ -523,6 +526,9 @@ func registerAdminRoutes(r *gin.RouterGroup, h *handler.AdminHandler, ad *handle
 	r.GET("/bag-deliveries/pending", ae.ListPendingBagDeliveries)
 	r.POST("/bag-deliveries/:id/approve", ae.ApproveBagDelivery)
 	r.POST("/bag-deliveries/:id/reject", ae.RejectBagDelivery)
+	r.GET("/expire-refunds/pending", ad.ListExpireRefundReviews)
+	r.POST("/expire-refunds/:id/approve", ad.ApproveExpireRefund)
+	r.POST("/expire-refunds/:id/reject", ad.RejectExpireRefund)
 	r.POST("/deliveries/:id/resolve-resume", ae.AdminResolveDeliveryResume)
 	r.POST("/deliveries/:id/resolve-reassign", ae.AdminResolveDeliveryReassign)
 	r.POST("/deliveries/:id/resolve-cancel", ae.AdminResolveDeliveryCancel)
@@ -561,6 +567,12 @@ func registerAdminRoutes(r *gin.RouterGroup, h *handler.AdminHandler, ad *handle
 	r.PUT("/home-carousel/reorder", hc.Reorder)
 	r.PATCH("/home-carousel/:id", hc.Update)
 	r.DELETE("/home-carousel/:id", hc.Delete)
+
+	r.GET("/home-featured", hf.ListAdmin)
+	r.POST("/home-featured", hf.Create)
+	r.PUT("/home-featured/reorder", hf.Reorder)
+	r.PATCH("/home-featured/:id", hf.Update)
+	r.DELETE("/home-featured/:id", hf.Delete)
 }
 
 func registerRiderRoutes(r *gin.RouterGroup, h *handler.RiderHandler) {

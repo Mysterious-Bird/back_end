@@ -366,6 +366,11 @@ func TestValidateBargainConfig(t *testing.T) {
 	if err := validateBargainOnActivityProduct(in); err != nil {
 		t.Fatal(err)
 	}
+	zero := 0.0
+	in.BargainFloorPrice = &zero
+	if err := validateBargainOnActivityProduct(in); err != nil {
+		t.Fatalf("floor=0 should pass: %v", err)
+	}
 	in.EnableGroupBuy = 1
 	if err := validateBargainOnActivityProduct(in); err == nil {
 		t.Fatal("group+bargain should fail")

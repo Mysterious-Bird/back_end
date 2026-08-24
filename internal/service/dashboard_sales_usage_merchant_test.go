@@ -102,6 +102,63 @@ func seedSharedProductSalesFixture(t *testing.T, db *gorm.DB) {
 	}
 }
 
+func TestCompletedBagSalesItemUsesVerifiedAt(t *testing.T) {
+	db := setupDashboardSalesTestDB(t)
+	seedOpenMerchant(db, 1, "店A")
+	p := seedOnShelfProduct(db, 1, "核销品")
+	inv := model.UserInventory{AccountID: 100, ProductID: p.ID, Quantity: 1}
+	if err := db.Create(&inv).Error; err != nil {
+		t.Fatal(err)
+	}
+	useTime := time.Date(2026, 8, 10, 12, 0, 0, 0, time.Local)
+	verifyTime := time.Date(2026, 8, 19, 15, 30, 0, 0, time.Local)
+	usage := model.UserInventoryUsage{
+		AccountID: 100, InventoryID: inv.ID, ProductID: p.ID, MerchantID: 1,
+		UsageMerchantID: 1, Quantity: 1, DeliveryType: model.DeliveryTypePickup,
+		Status: model.InventoryUsageCompleted,
+	}
+	if err := db.Create(&usage).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&usage).Updates(map[string]interface{}{
+		"created_at": useTime,
+		"updated_at": useTime,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	vc := model.VerificationCode{
+		InventoryUsageID: &usage.ID, AccountID: 100, Code: "V-001",
+		Status: model.VerificationCodeUsed,
+	}
+	if err := db.Create(&vc).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.VerificationRecord{
+		VerificationCodeID: vc.ID, OrderID: 0, MerchantID: 1, OperatorID: 1,
+		VerifiedAt: verifyTime,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	svc := &DashboardService{DB: db}
+	mid := uint64(1)
+	report, err := svc.SalesReport(SalesReportFilter{MerchantID: &mid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.CompletedItems) != 1 {
+		t.Fatalf("want 1 completed item, got %d", len(report.CompletedItems))
+	}
+	want := verifyTime.Format("2006-01-02 15:04")
+	if report.CompletedItems[0].CompletedAt != want {
+		t.Fatalf("CompletedAt=%q want verified_at %q", report.CompletedItems[0].CompletedAt, want)
+	}
+	wantPurchase := useTime.Format("2006-01-02 15:04")
+	if report.CompletedItems[0].PurchasedAt != wantPurchase {
+		t.Fatalf("PurchasedAt=%q want usage created_at %q", report.CompletedItems[0].PurchasedAt, wantPurchase)
+	}
+}
+
 func TestSalesReportAttributesToUsageMerchant(t *testing.T) {
 	db := setupDashboardSalesTestDB(t)
 	seedSharedProductSalesFixture(t, db)

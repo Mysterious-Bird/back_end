@@ -56,6 +56,7 @@ type AdminDashboard struct {
 	PendingRiderApps              int64              `json:"pending_rider_apps"`
 	PendingDeliveryExceptions     int64              `json:"pending_delivery_exceptions"`
 	PendingBagDeliveryReviews     int64              `json:"pending_bag_delivery_reviews"`
+	PendingExpireRefundReviews    int64              `json:"pending_expire_refund_reviews"`
 	MerchantCount                 int64              `json:"merchant_count"`
 	ProductCount                  int64              `json:"product_count"`
 	LowStockProductCount          int64              `json:"low_stock_product_count"`
@@ -91,7 +92,11 @@ type SalesReport struct {
 	CompletedItems       []SalesCompletedItem `json:"completed_items"`
 	PendingOrderCount    int64                `json:"pending_order_count"`
 	PendingSalesAmount   float64              `json:"pending_sales_amount"`
+	PendingQuantity      int64                `json:"pending_quantity"` // 待履约商品件数（含外卖/背包库存口径与 pending 明细一致）
 	PendingItems         []SalesPendingItem   `json:"pending_items"`
+	CompletedQuantity    int64                `json:"completed_quantity"` // 已履约商品件数
+	RefundedOrderCount   int64                `json:"refunded_order_count"` // 有退款的订单数
+	RefundedAmount       float64              `json:"refunded_amount"`      // 累计退款金额
 	StartDate            string               `json:"start_date,omitempty"`
 	EndDate              string               `json:"end_date,omitempty"`
 }
@@ -108,6 +113,9 @@ type SalesCompletedItem struct {
 	FulfillType  string  `json:"fulfill_type"`
 	FulfillText  string  `json:"fulfill_text"`
 	CompletedAt  string  `json:"completed_at"`
+	PurchasedAt  string  `json:"purchased_at,omitempty"`
+	ExpireAt     string  `json:"expire_at,omitempty"`
+	VerifiedAt   string  `json:"verified_at,omitempty"`
 	PackageText  string  `json:"package_text,omitempty"`
 	IsPackage    bool    `json:"is_package"`
 	UserNickname string  `json:"user_nickname,omitempty"`
@@ -128,6 +136,8 @@ type SalesPendingItem struct {
 	UnitPrice    float64 `json:"unit_price"`
 	Amount       float64 `json:"amount"`
 	PurchasedAt  string  `json:"purchased_at"`
+	ExpireAt     string  `json:"expire_at,omitempty"`
+	VerifiedAt   string  `json:"verified_at,omitempty"` // 待履约为空，前端展示「未核销」
 	StatusText   string  `json:"status_text"`
 	UserNickname string  `json:"user_nickname,omitempty"`
 	UserPhone    string  `json:"user_phone,omitempty"`
@@ -185,6 +195,9 @@ func (s *DashboardService) Admin() (*AdminDashboard, error) {
 		Where("is_deleted = ? AND status = ? AND inventory_usage_id IS NOT NULL AND takeout_order_id IS NULL",
 			model.NotDeleted, model.DeliveryPendingAdminReview).
 		Count(&d.PendingBagDeliveryReviews)
+	s.freshDB().Model(&model.UserInventoryUsage{}).
+		Where("is_deleted = ? AND status = ?", model.NotDeleted, model.InventoryUsageRefundReview).
+		Count(&d.PendingExpireRefundReviews)
 	s.freshDB().Model(&model.MerchantProfile{}).Where("is_deleted = ?", model.NotDeleted).Count(&d.MerchantCount)
 	s.freshDB().Model(&model.Product{}).Where("is_deleted = ?", model.NotDeleted).Count(&d.ProductCount)
 	s.freshDB().Model(&model.Product{}).Where("is_deleted = ? AND stock <= ?", model.NotDeleted, 10).Count(&d.LowStockProductCount)
@@ -298,12 +311,145 @@ func (s *DashboardService) SalesReport(filter SalesReportFilter) (*SalesReport, 
 	report.PendingOrderCount = pendingCount
 	report.PendingSalesAmount = roundMoney(pendingAmount)
 
+	completedQty, err := s.sumCompletedQuantity(filter)
+	if err != nil {
+		return nil, err
+	}
+	report.CompletedQuantity = completedQty
+	pendingQty, err := s.sumPendingQuantity(filter)
+	if err != nil {
+		return nil, err
+	}
+	report.PendingQuantity = pendingQty
+
+	refundedCount, refundedAmount, err := s.sumRefundedOrders(filter)
+	if err != nil {
+		return nil, err
+	}
+	report.RefundedOrderCount = refundedCount
+	report.RefundedAmount = roundMoney(refundedAmount)
+
 	vrQ := s.effectiveVerificationQuery(filter.MerchantID)
 	vrQ = applyVerifiedTimeRange(vrQ, filter.StartDate, filter.EndDate)
 	if err := vrQ.Count(&report.VerificationCount).Error; err != nil {
 		return nil, err
 	}
 	return report, nil
+}
+
+// sumRefundedOrders 统计区间内发生的退款单数与金额。
+// 有微信退款流水时按 payment_refund.created_at；无流水的本地/零元退款按 order.updated_at。
+func (s *DashboardService) sumRefundedOrders(filter SalesReportFilter) (int64, float64, error) {
+	type agg struct {
+		Cnt int64   `gorm:"column:cnt"`
+		Amt float64 `gorm:"column:amt"`
+	}
+
+	var fromPR agg
+	prQ := s.freshDB().Table("payment_refund AS pr").
+		Select("COUNT(DISTINCT pr.order_no) AS cnt, COALESCE(SUM(pr.refund_amount),0) AS amt").
+		Joins("JOIN `order` o ON o.order_no = pr.order_no AND o.is_deleted = ?", model.NotDeleted).
+		Where("pr.status = ?", 1)
+	if filter.MerchantID != nil {
+		prQ = prQ.Where("o.merchant_id = ?", *filter.MerchantID)
+	}
+	prQ = applyCompletedTimeRange(prQ, "pr.created_at", filter.StartDate, filter.EndDate)
+	if err := prQ.Scan(&fromPR).Error; err != nil {
+		return 0, 0, err
+	}
+
+	var fromLocal agg
+	localQ := query.NotDeleted(s.freshDB().Model(&model.Order{})).
+		Select("COUNT(*) AS cnt, COALESCE(SUM(refunded_amount),0) AS amt").
+		Where("refunded_amount > 0 OR pay_status IN (?, ?, ?)",
+			model.PayStatusRefunding, model.PayStatusRefunded, model.PayStatusPartialRefunded).
+		Where("NOT EXISTS (SELECT 1 FROM payment_refund pr WHERE pr.order_no = `order`.order_no AND pr.status = 1)")
+	if filter.MerchantID != nil {
+		localQ = localQ.Where("merchant_id = ?", *filter.MerchantID)
+	}
+	localQ = applyCompletedTimeRange(localQ, "updated_at", filter.StartDate, filter.EndDate)
+	if err := localQ.Scan(&fromLocal).Error; err != nil {
+		return 0, 0, err
+	}
+
+	return fromPR.Cnt + fromLocal.Cnt, fromPR.Amt + fromLocal.Amt, nil
+}
+
+// sumCompletedQuantity 已履约商品件数（背包 usage.quantity + 外卖明细件数）。
+func (s *DashboardService) sumCompletedQuantity(filter SalesReportFilter) (int64, error) {
+	var bagQty int64
+	bq := query.NotDeleted(s.freshDB().Model(&model.UserInventoryUsage{})).
+		Where("status = ?", model.InventoryUsageCompleted)
+	if filter.MerchantID != nil {
+		bq = bq.Where("usage_merchant_id = ?", *filter.MerchantID)
+	}
+	bq = applyCompletedTimeRange(bq, "updated_at", filter.StartDate, filter.EndDate)
+	if err := bq.Select("COALESCE(SUM(quantity),0)").Scan(&bagQty).Error; err != nil {
+		return 0, err
+	}
+
+	var takeoutQty int64
+	tq := s.freshDB().Table("takeout_order_item AS ti").
+		Joins("JOIN takeout_order t ON t.id = ti.takeout_order_id AND t.is_deleted = ?", model.NotDeleted).
+		Where("ti.is_deleted = 0 AND t.status = ? AND t.pay_status = ?",
+			model.TakeoutStatusCompleted, model.PayStatusPaid)
+	if filter.MerchantID != nil {
+		tq = tq.Where("t.usage_merchant_id = ?", *filter.MerchantID)
+	}
+	tq = applyCompletedTimeRange(tq, "t.updated_at", filter.StartDate, filter.EndDate)
+	if err := tq.Select("COALESCE(SUM(ti.quantity),0)").Scan(&takeoutQty).Error; err != nil {
+		return 0, err
+	}
+	return bagQty + takeoutQty, nil
+}
+
+// sumPendingQuantity 待履约商品件数（待核销/配送 usage + 进行中外卖 + 背包剩余库存）。
+func (s *DashboardService) sumPendingQuantity(filter SalesReportFilter) (int64, error) {
+	var bagQty int64
+	bq := query.NotDeleted(s.freshDB().Model(&model.UserInventoryUsage{})).
+		Where("status IN ?", []int{
+			int(model.InventoryUsagePendingVerify),
+			int(model.InventoryUsagePendingShip),
+			int(model.InventoryUsageCancelPending),
+		})
+	if filter.MerchantID != nil {
+		bq = bq.Where("usage_merchant_id = ?", *filter.MerchantID)
+	}
+	bq = applyCompletedTimeRange(bq, "created_at", filter.StartDate, filter.EndDate)
+	if err := bq.Select("COALESCE(SUM(quantity),0)").Scan(&bagQty).Error; err != nil {
+		return 0, err
+	}
+
+	var takeoutQty int64
+	tq := s.freshDB().Table("takeout_order_item AS ti").
+		Joins("JOIN takeout_order t ON t.id = ti.takeout_order_id AND t.is_deleted = ?", model.NotDeleted).
+		Where("ti.is_deleted = 0 AND t.pay_status = ? AND t.status IN ?",
+			model.PayStatusPaid, []int{
+				int(model.TakeoutStatusPreparing),
+				int(model.TakeoutStatusFulfilling),
+			})
+	if filter.MerchantID != nil {
+		tq = tq.Where("t.usage_merchant_id = ?", *filter.MerchantID)
+	}
+	tq = applyCompletedTimeRange(tq, "t.created_at", filter.StartDate, filter.EndDate)
+	if err := tq.Select("COALESCE(SUM(ti.quantity),0)").Scan(&takeoutQty).Error; err != nil {
+		return 0, err
+	}
+
+	var invQty int64
+	iq := query.NotDeleted(s.freshDB().Model(&model.UserInventory{})).
+		Where("quantity > 0")
+	if filter.MerchantID != nil {
+		iq = iq.Where(
+			"product_id IN (SELECT id FROM product WHERE is_deleted = 0 AND merchant_id = ?)",
+			*filter.MerchantID,
+		)
+	}
+	iq = applyCompletedTimeRange(iq, "updated_at", filter.StartDate, filter.EndDate)
+	if err := iq.Select("COALESCE(SUM(quantity),0)").Scan(&invQty).Error; err != nil {
+		return 0, err
+	}
+	return bagQty + takeoutQty + invQty, nil
 }
 
 // effectiveVerificationQuery 仅统计仍对应「已完成」使用记录的核销（回退后作废的不计入）。
@@ -331,6 +477,32 @@ func applyCompletedTimeRange(q *gorm.DB, col string, start, end *time.Time) *gor
 
 func applyVerifiedTimeRange(q *gorm.DB, start, end *time.Time) *gorm.DB {
 	return applyCompletedTimeRange(q, "vr.verified_at", start, end)
+}
+
+// loadUsageVerifiedAtMap 自提核销时间（verification_record.verified_at），按 usage_id 取最新一条。
+func (s *DashboardService) loadUsageVerifiedAtMap(usageIDs []uint64) map[uint64]time.Time {
+	out := make(map[uint64]time.Time)
+	if len(usageIDs) == 0 {
+		return out
+	}
+	type row struct {
+		UsageID    uint64    `gorm:"column:usage_id"`
+		VerifiedAt time.Time `gorm:"column:verified_at"`
+	}
+	var rows []row
+	err := s.freshDB().Table("verification_record AS vr").
+		Select("vc.inventory_usage_id AS usage_id, MAX(vr.verified_at) AS verified_at").
+		Joins("JOIN verification_code vc ON vc.id = vr.verification_code_id AND vc.is_deleted = ?", model.NotDeleted).
+		Where("vr.is_deleted = ? AND vc.inventory_usage_id IN ?", model.NotDeleted, usageIDs).
+		Group("vc.inventory_usage_id").
+		Scan(&rows).Error
+	if err != nil {
+		return out
+	}
+	for _, r := range rows {
+		out[r.UsageID] = r.VerifiedAt
+	}
+	return out
 }
 
 // listCompletedSalesItems 汇总已确定收益：背包履约完成 + 外卖完成。
@@ -380,6 +552,12 @@ func (s *DashboardService) listCompletedBagSalesItems(filter SalesReportFilter) 
 	}
 
 	unitByKey := s.loadOrderItemSaleMeta(usages)
+	usageIDs := make([]uint64, 0, len(usages))
+	for _, u := range usages {
+		usageIDs = append(usageIDs, u.ID)
+	}
+	verifiedAtByUsage := s.loadUsageVerifiedAtMap(usageIDs)
+	orderPaidAt := s.loadOrderPurchasedAtMap(collectUsageSourceOrderIDs(usages))
 
 	items := make([]SalesCompletedItem, 0, len(usages))
 	var sum float64
@@ -418,11 +596,27 @@ func (s *DashboardService) listCompletedBagSalesItems(filter SalesReportFilter) 
 		}
 		nick, phone := s.lookupAccountBrief(u.AccountID)
 		ch, chText := ResolveSaleChannel(pt, actID)
+		completedAt := u.UpdatedAt
+		if u.DeliveryType == model.DeliveryTypePickup {
+			if t, ok := verifiedAtByUsage[u.ID]; ok {
+				completedAt = t
+			}
+		}
+		purchasedAt := u.CreatedAt
+		if u.SourceOrderID != nil {
+			if t, ok := orderPaidAt[*u.SourceOrderID]; ok {
+				purchasedAt = t
+			}
+		}
+		verifiedAt := completedAt
 		items = append(items, SalesCompletedItem{
 			UsageID: u.ID, ProductID: u.ProductID, ProductName: name,
 			Quantity: u.Quantity, UnitPrice: unitPrice, Amount: amount,
 			FulfillType: fulfillType, FulfillText: fulfillText,
-			CompletedAt: u.UpdatedAt.Format("2006-01-02 15:04"),
+			CompletedAt: formatSalesTime(completedAt),
+			PurchasedAt: formatSalesTime(purchasedAt),
+			ExpireAt:    formatSalesTimePtr(u.ExpireAt),
+			VerifiedAt:  formatSalesTime(verifiedAt),
 			PackageText: pkgText, IsPackage: isPkg,
 			UserNickname: nick, UserPhone: phone,
 			PurchaseType: pt, ActivityID: actID,
@@ -478,11 +672,17 @@ func (s *DashboardService) listCompletedTakeoutSalesItems(filter SalesReportFilt
 			}
 		}
 		nick, phone := s.lookupAccountBrief(o.AccountID)
+		purchasedAt := o.CreatedAt
+		if o.PaidAt != nil {
+			purchasedAt = *o.PaidAt
+		}
 		items = append(items, SalesCompletedItem{
 			TakeoutID: o.ID, ProductID: firstTakeoutProductID(o.Items), ProductName: name,
 			Quantity: qty, UnitPrice: unit, Amount: net,
 			FulfillType: "takeout", FulfillText: "外卖·已完成",
-			CompletedAt: o.UpdatedAt.Format("2006-01-02 15:04"),
+			CompletedAt: formatSalesTime(o.UpdatedAt),
+			PurchasedAt: formatSalesTime(purchasedAt),
+			VerifiedAt:  formatSalesTime(o.UpdatedAt),
 			UserNickname: nick, UserPhone: phone,
 		})
 	}
@@ -540,6 +740,7 @@ func (s *DashboardService) listPendingBagSalesItems(filter SalesReportFilter) ([
 		return nil, 0, 0, err
 	}
 	metaByKey := s.loadOrderItemSaleMeta(usages)
+	orderPaidAt := s.loadOrderPurchasedAtMap(collectUsageSourceOrderIDs(usages))
 	items := make([]SalesPendingItem, 0, len(usages))
 	var sum float64
 	for _, u := range usages {
@@ -565,10 +766,17 @@ func (s *DashboardService) listPendingBagSalesItems(filter SalesReportFilter) ([
 		sum += amount
 		nick, phone := s.lookupAccountBrief(u.AccountID)
 		ch, chText := ResolveSaleChannel(pt, actID)
+		purchasedAt := u.CreatedAt
+		if u.SourceOrderID != nil {
+			if t, ok := orderPaidAt[*u.SourceOrderID]; ok {
+				purchasedAt = t
+			}
+		}
 		items = append(items, SalesPendingItem{
 			Source: "usage", ID: u.ID, ProductID: u.ProductID, ProductName: name,
 			Quantity: u.Quantity, UnitPrice: unitPrice, Amount: amount,
-			PurchasedAt: u.CreatedAt.Format("2006-01-02 15:04"),
+			PurchasedAt: formatSalesTime(purchasedAt),
+			ExpireAt:    formatSalesTimePtr(u.ExpireAt),
 			StatusText:  model.InventoryUsageStatusText(u.Status),
 			UserNickname: nick, UserPhone: phone,
 			PurchaseType: pt, ActivityID: actID,
@@ -718,6 +926,58 @@ func firstTakeoutProductID(items []model.TakeoutOrderItem) uint64 {
 
 func orderProductKey(orderID, productID uint64) string {
 	return fmt.Sprintf("%d:%d", orderID, productID)
+}
+
+func collectUsageSourceOrderIDs(usages []model.UserInventoryUsage) []uint64 {
+	orderIDs := make([]uint64, 0)
+	seen := map[uint64]struct{}{}
+	for _, u := range usages {
+		if u.SourceOrderID == nil || *u.SourceOrderID == 0 {
+			continue
+		}
+		if _, ok := seen[*u.SourceOrderID]; ok {
+			continue
+		}
+		seen[*u.SourceOrderID] = struct{}{}
+		orderIDs = append(orderIDs, *u.SourceOrderID)
+	}
+	return orderIDs
+}
+
+func formatSalesTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format("2006-01-02 15:04")
+}
+
+func formatSalesTimePtr(t *time.Time) string {
+	if t == nil || t.IsZero() {
+		return ""
+	}
+	return t.Format("2006-01-02 15:04")
+}
+
+func (s *DashboardService) loadOrderPurchasedAtMap(orderIDs []uint64) map[uint64]time.Time {
+	out := map[uint64]time.Time{}
+	if len(orderIDs) == 0 {
+		return out
+	}
+	var orders []model.Order
+	if err := query.NotDeleted(s.freshDB().Model(&model.Order{})).
+		Select("id", "paid_at", "created_at").
+		Where("id IN ?", orderIDs).
+		Find(&orders).Error; err != nil {
+		return out
+	}
+	for _, o := range orders {
+		t := o.CreatedAt
+		if o.PaidAt != nil {
+			t = *o.PaidAt
+		}
+		out[o.ID] = t
+	}
+	return out
 }
 
 func (s *DashboardService) loadOrderItemUnitPrices(usages []model.UserInventoryUsage) map[string]float64 {

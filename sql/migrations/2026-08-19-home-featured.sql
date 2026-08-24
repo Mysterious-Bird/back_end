@@ -1,0 +1,22 @@
+CREATE TABLE IF NOT EXISTS `home_featured` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `section` VARCHAR(16) NOT NULL COMMENT 'pickup|deal|food',
+  `product_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `merchant_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `activity_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `activity_product_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `channel` VARCHAR(16) NOT NULL DEFAULT 'deal',
+  `sort_order` INT NOT NULL DEFAULT 0,
+  `status` TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  `is_deleted` TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  `deleted_at` DATETIME(3) NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_home_featured_section` (`section`),
+  KEY `idx_home_featured_product` (`product_id`),
+  KEY `idx_home_featured_merchant` (`merchant_id`),
+  KEY `idx_home_featured_activity_product` (`activity_product_id`),
+  KEY `idx_home_featured_status_sort` (`status`, `sort_order`),
+  KEY `idx_home_featured_is_deleted` (`is_deleted`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
