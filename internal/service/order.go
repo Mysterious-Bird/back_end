@@ -196,6 +196,9 @@ func (s *OrderService) Create(accountID uint64, input CreateOrderInput) (*OrderV
 			if sess.ActivityProductID != *activityProductID {
 				return nil, fmt.Errorf("%w: 砍价会话与活动商品不匹配", ErrBargainConflict)
 			}
+			if err := assertBargainFloorReached(ctx.ActivityProduct, &sess); err != nil {
+				return nil, err
+			}
 			unitPrice = roundBargainMoney(sess.CurrentPrice)
 		}
 	} else {

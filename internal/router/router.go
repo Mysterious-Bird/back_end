@@ -79,6 +79,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 		PayTimeoutMinutes: cfg.Payment.PayTimeoutMinutes,
 		AvatarPublicBase:  cfg.Upload.AvatarPublicBase,
 	}
+	bargainSvc.OrderSvc = orderSvc
 	takeoutSvc := &service.TakeoutService{
 		DB: db, ZoneSvc: deliveryZoneSvc, Payment: payProvider,
 		PayTimeoutMinutes: cfg.Payment.PayTimeoutMinutes,

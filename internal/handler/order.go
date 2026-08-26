@@ -289,6 +289,8 @@ func handleOrderError(c *gin.Context, err error) {
 		response.Fail(c, 404, 404, "砍价不存在")
 	case errors.Is(err, service.ErrBargainExpired):
 		response.BadRequest(c, "砍价已过期")
+	case errors.Is(err, service.ErrBargainFloorRequired):
+		response.BadRequest(c, "须砍至底价后方可购买")
 	case errors.Is(err, service.ErrBargainForbidden), errors.Is(err, service.ErrBargainConflict):
 		msg := "砍价不可用"
 		if raw := err.Error(); len(raw) > 0 {

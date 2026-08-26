@@ -67,6 +67,7 @@ type ActivityProductInput struct {
 	BargainNewUserHours        uint32
 	BargainHelpDailyMax        uint32
 	EnableBargainSelfCut       uint8
+	BargainRequireFloor        uint8
 	BargainSelfCutMode         uint8
 	BargainSelfCutMin          float64
 	BargainSelfCutMax          float64
@@ -112,6 +113,7 @@ type UpdateActivityProductPatch struct {
 	BargainNewUserHours        *uint32
 	BargainHelpDailyMax        *uint32
 	EnableBargainSelfCut       *uint8
+	BargainRequireFloor        *uint8
 	BargainSelfCutMode         *uint8
 	BargainSelfCutMin          *float64
 	BargainSelfCutMax          *float64
@@ -427,7 +429,8 @@ func (s *ActivityService) AddProduct(activityID uint64, input ActivityProductInp
 		EnableGroupBuy: input.EnableGroupBuy, EnableBargain: input.EnableBargain,
 		BargainFloorPrice: input.BargainFloorPrice, BargainDurationHours: input.BargainDurationHours,
 		BargainNewUserHours: input.BargainNewUserHours, BargainHelpDailyMax: input.BargainHelpDailyMax,
-		EnableBargainSelfCut: input.EnableBargainSelfCut, BargainSelfCutMode: input.BargainSelfCutMode,
+		EnableBargainSelfCut: input.EnableBargainSelfCut, BargainRequireFloor: input.BargainRequireFloor,
+		BargainSelfCutMode: input.BargainSelfCutMode,
 		BargainSelfCutMin: input.BargainSelfCutMin, BargainSelfCutMax: input.BargainSelfCutMax,
 		BargainNewCutMode: input.BargainNewCutMode,
 		BargainNewMin: input.BargainNewMin, BargainNewMax: input.BargainNewMax,
@@ -488,6 +491,7 @@ func activityProductUpdates(input ActivityProductInput, maxJoins uint32, status 
 		"bargain_new_user_hours":         input.BargainNewUserHours,
 		"bargain_help_daily_max":         input.BargainHelpDailyMax,
 		"enable_bargain_self_cut":        input.EnableBargainSelfCut,
+		"bargain_require_floor":          input.BargainRequireFloor,
 		"bargain_self_cut_mode":          input.BargainSelfCutMode,
 		"bargain_self_cut_min":           input.BargainSelfCutMin,
 		"bargain_self_cut_max":           input.BargainSelfCutMax,
@@ -571,6 +575,7 @@ func (p UpdateActivityProductPatch) hasField() bool {
 		p.GroupBuyMaxJoinsPerUser != nil || p.GroupBuyMaxConcurrentTeams != nil || p.ExpireDays != nil ||
 		p.EnableBargain != nil || p.BargainFloorPrice != nil || p.BargainDurationHours != nil ||
 		p.BargainNewUserHours != nil || p.BargainHelpDailyMax != nil || p.EnableBargainSelfCut != nil ||
+		p.BargainRequireFloor != nil ||
 		p.BargainSelfCutMode != nil || p.BargainSelfCutMin != nil || p.BargainSelfCutMax != nil ||
 		p.BargainNewMin != nil || p.BargainNewMax != nil || p.BargainOldMin != nil || p.BargainOldMax != nil ||
 		p.BargainNewCutMode != nil || p.BargainOldCutMode != nil ||
@@ -602,6 +607,7 @@ func activityProductInputToPatch(input ActivityProductInput) UpdateActivityProdu
 		BargainNewUserHours:        &input.BargainNewUserHours,
 		BargainHelpDailyMax:        &input.BargainHelpDailyMax,
 		EnableBargainSelfCut:       &input.EnableBargainSelfCut,
+		BargainRequireFloor:        &input.BargainRequireFloor,
 		BargainSelfCutMode:         &input.BargainSelfCutMode,
 		BargainSelfCutMin:          &input.BargainSelfCutMin,
 		BargainSelfCutMax:          &input.BargainSelfCutMax,
@@ -650,6 +656,7 @@ func mergeActivityProductPatch(ap *model.ActivityProduct, patch UpdateActivityPr
 		BargainNewUserHours:        ap.BargainNewUserHours,
 		BargainHelpDailyMax:        ap.BargainHelpDailyMax,
 		EnableBargainSelfCut:       ap.EnableBargainSelfCut,
+		BargainRequireFloor:        ap.BargainRequireFloor,
 		BargainSelfCutMode:         ap.BargainSelfCutMode,
 		BargainSelfCutMin:          ap.BargainSelfCutMin,
 		BargainSelfCutMax:          ap.BargainSelfCutMax,
@@ -737,6 +744,9 @@ func mergeActivityProductPatch(ap *model.ActivityProduct, patch UpdateActivityPr
 	}
 	if patch.EnableBargainSelfCut != nil {
 		merged.EnableBargainSelfCut = *patch.EnableBargainSelfCut
+	}
+	if patch.BargainRequireFloor != nil {
+		merged.BargainRequireFloor = *patch.BargainRequireFloor
 	}
 	if patch.BargainSelfCutMode != nil {
 		merged.BargainSelfCutMode = *patch.BargainSelfCutMode

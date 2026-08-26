@@ -25,10 +25,12 @@ var (
 	ErrBargainNoRemain         = errors.New("bargain already at floor")
 	ErrBargainConflict         = errors.New("bargain session conflict")
 	ErrBargainSelfCutDisabled  = errors.New("bargain self cut disabled")
+	ErrBargainFloorRequired    = errors.New("bargain must reach floor before buy")
 )
 
 type BargainService struct {
-	DB *gorm.DB
+	DB       *gorm.DB
+	OrderSvc *OrderService // 底价为 0 自动入包
 }
 
 type BargainHelpView struct {
@@ -42,16 +44,20 @@ type BargainHelpView struct {
 
 type BargainSessionView struct {
 	model.BargainSession
-	ProductName   string            `json:"product_name"`
-	ProductCover  string            `json:"product_cover"`
-	CanBuy        bool              `json:"can_buy"`
-	CanHelp       bool              `json:"can_help"`
-	CanSelfCut    bool              `json:"can_self_cut"`
-	CanCancel     bool              `json:"can_cancel"`
-	IsInitiator   bool              `json:"is_initiator"`
-	AlreadyHelped bool              `json:"already_helped"`
-	GuideText     string            `json:"guide_text"`
-	Helps         []BargainHelpView `json:"helps"`
+	ProductName      string            `json:"product_name"`
+	ProductCover     string            `json:"product_cover"`
+	CanBuy           bool              `json:"can_buy"`
+	CanHelp          bool              `json:"can_help"`
+	CanSelfCut       bool              `json:"can_self_cut"`
+	CanCancel        bool              `json:"can_cancel"`
+	RequireFloor     bool              `json:"require_floor"`
+	AutoClaimed      bool              `json:"auto_claimed,omitempty"`
+	AutoClaimOrderID uint64            `json:"auto_claim_order_id,omitempty"`
+	AutoClaimError   string            `json:"auto_claim_error,omitempty"`
+	IsInitiator      bool              `json:"is_initiator"`
+	AlreadyHelped    bool              `json:"already_helped"`
+	GuideText        string            `json:"guide_text"`
+	Helps            []BargainHelpView `json:"helps"`
 }
 
 func roundBargainMoney(v float64) float64 {
@@ -214,6 +220,9 @@ func normalizeBargainInput(input ActivityProductInput) ActivityProductInput {
 			input.BargainSelfCutMin, input.BargainSelfCutMax = 0.1, 1
 		}
 	}
+	if input.BargainRequireFloor != 1 {
+		input.BargainRequireFloor = 0
+	}
 	if input.BargainNewCutMode != model.BargainCutModeFixed {
 		input.BargainNewCutMode = model.BargainCutModeRandom
 	}
@@ -254,6 +263,16 @@ func assertSessionBuyable(sess *model.BargainSession, buyerID uint64, now time.T
 	}
 	if sess.Status != model.BargainStatusOngoing {
 		return ErrBargainConflict
+	}
+	return nil
+}
+
+func assertBargainFloorReached(ap *model.ActivityProduct, sess *model.BargainSession) error {
+	if ap == nil || sess == nil || ap.BargainRequireFloor != 1 {
+		return nil
+	}
+	if roundBargainMoney(sess.CurrentPrice-sess.FloorPrice) > 0 {
+		return ErrBargainFloorRequired
 	}
 	return nil
 }
@@ -328,7 +347,10 @@ func (s *BargainService) StartSession(accountID, activityProductID uint64) (*Bar
 		out = view
 		return nil
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	return s.maybeAutoClaimZeroFloor(out), nil
 }
 
 func (s *BargainService) Help(sessionID, helperAccountID uint64) (*BargainSessionView, error) {
@@ -446,7 +468,10 @@ func (s *BargainService) Help(sessionID, helperAccountID uint64) (*BargainSessio
 		out = view
 		return nil
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	return s.maybeAutoClaimZeroFloor(out), nil
 }
 
 func isUniqueViolation(err error) bool {
@@ -455,6 +480,42 @@ func isUniqueViolation(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "UNIQUE") || strings.Contains(msg, "unique") || strings.Contains(msg, "Duplicate")
+}
+
+// maybeAutoClaimZeroFloor 底价为 0 且已砍到底价时自动下单入包（零元免支付）。
+func (s *BargainService) maybeAutoClaimZeroFloor(view *BargainSessionView) *BargainSessionView {
+	if view == nil || s == nil || s.OrderSvc == nil {
+		return view
+	}
+	if view.Status != model.BargainStatusOngoing {
+		return view
+	}
+	if !isZeroMoney(view.FloorPrice) || !isZeroMoney(view.CurrentPrice) {
+		return view
+	}
+	orderView, err := s.OrderSvc.Create(view.InitiatorAccountID, CreateOrderInput{
+		ActivityProductID: &view.ActivityProductID,
+		MerchantID:        view.MerchantID,
+		Quantity:          1,
+		DeliveryType:      model.DeliveryTypePickup,
+		PurchaseType:      model.PurchaseTypeSolo,
+		BargainSessionID:  &view.ID,
+	})
+	if err != nil {
+		view.AutoClaimError = err.Error()
+		return view
+	}
+	view.AutoClaimed = true
+	if orderView != nil {
+		view.AutoClaimOrderID = orderView.ID
+		view.Status = model.BargainStatusOrdered
+		view.CanBuy = false
+		view.CanHelp = false
+		view.CanSelfCut = false
+		view.CanCancel = false
+		view.GuideText = "已到底价 ¥0.00，已自动入包"
+	}
+	return view
 }
 
 func (s *BargainService) GetSession(sessionID uint64, viewerAccountID *uint64) (*BargainSessionView, error) {
@@ -476,7 +537,14 @@ func (s *BargainService) GetSession(sessionID uint64, viewerAccountID *uint64) (
 	if err != nil {
 		return nil, err
 	}
-	return s.buildView(s.DB, &sess, product, viewerAccountID)
+	view, err := s.buildView(s.DB, &sess, product, viewerAccountID)
+	if err != nil {
+		return nil, err
+	}
+	if viewerAccountID != nil && *viewerAccountID == sess.InitiatorAccountID {
+		return s.maybeAutoClaimZeroFloor(view), nil
+	}
+	return view, nil
 }
 
 // ListMine 发起人自己的砍价会话；默认仅进行中（含读时过期）。
@@ -621,20 +689,25 @@ func (s *BargainService) buildView(tx *gorm.DB, sess *model.BargainSession, prod
 	canSelfCut := false
 	canCancel := false
 	now := time.Now()
-	var selfCutFlag uint8
+	var flags struct {
+		EnableBargainSelfCut uint8 `gorm:"column:enable_bargain_self_cut"`
+		BargainRequireFloor  uint8 `gorm:"column:bargain_require_floor"`
+	}
 	if err := tx.Model(&model.ActivityProduct{}).
-		Select("enable_bargain_self_cut").
+		Select("enable_bargain_self_cut", "bargain_require_floor").
 		Where("id = ? AND is_deleted = ?", sess.ActivityProductID, model.NotDeleted).
-		Scan(&selfCutFlag).Error; err != nil {
+		Scan(&flags).Error; err != nil {
 		return nil, err
 	}
-	enableSelfCut := selfCutFlag == 1
+	enableSelfCut := flags.EnableBargainSelfCut == 1
+	requireFloor := flags.BargainRequireFloor == 1
+	atFloor := roundBargainMoney(sess.CurrentPrice-sess.FloorPrice) <= 0
 	if sess.Status == model.BargainStatusOngoing && !now.After(sess.ExpireAt) {
 		if isInit {
-			canBuy = true
+			canBuy = !requireFloor || atFloor
 			canCancel = true
 		}
-		remainOk := roundBargainMoney(sess.CurrentPrice-sess.FloorPrice) > 0
+		remainOk := !atFloor
 		if viewer != nil && remainOk {
 			if isInit && enableSelfCut && sess.SelfCutDone == 0 {
 				canSelfCut = true
@@ -651,8 +724,16 @@ func (s *BargainService) buildView(tx *gorm.DB, sess *model.BargainSession, prod
 		name = product.Name
 	}
 	guide := fmt.Sprintf("已砍至 ¥%.2f · 底价 ¥%.2f · 再邀好友有机会更低", sess.CurrentPrice, sess.FloorPrice)
-	if roundBargainMoney(sess.CurrentPrice-sess.FloorPrice) <= 0 {
-		guide = fmt.Sprintf("已到底价 ¥%.2f，可立即购买", sess.FloorPrice)
+	if atFloor {
+		if isZeroMoney(sess.FloorPrice) {
+			guide = fmt.Sprintf("已到底价 ¥%.2f，将自动入包", sess.FloorPrice)
+		} else if requireFloor {
+			guide = fmt.Sprintf("已到底价 ¥%.2f，可立即购买", sess.FloorPrice)
+		} else {
+			guide = fmt.Sprintf("已到底价 ¥%.2f，可立即购买", sess.FloorPrice)
+		}
+	} else if requireFloor {
+		guide = fmt.Sprintf("已砍至 ¥%.2f · 须砍至底价 ¥%.2f 后方可购买", sess.CurrentPrice, sess.FloorPrice)
 	}
 	return &BargainSessionView{
 		BargainSession: *sess,
@@ -662,6 +743,7 @@ func (s *BargainService) buildView(tx *gorm.DB, sess *model.BargainSession, prod
 		CanHelp:        canHelp,
 		CanSelfCut:     canSelfCut,
 		CanCancel:      canCancel,
+		RequireFloor:   requireFloor,
 		IsInitiator:    isInit,
 		AlreadyHelped:  already,
 		GuideText:      guide,

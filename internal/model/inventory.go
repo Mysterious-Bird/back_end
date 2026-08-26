@@ -19,7 +19,7 @@ const (
 	InventoryUsageCompleted      uint8 = 3
 	InventoryUsageCancelled      uint8 = 4
 	InventoryUsageCancelPending  uint8 = 5
-	InventoryUsageRefundReview   uint8 = 6 // 拼团过期：待管理员退款审核
+	InventoryUsageRefundReview   uint8 = 6 // 拼团退款：待管理员审核
 )
 
 // 套餐选配状态（仅 item_type=套餐 的使用记录有意义）

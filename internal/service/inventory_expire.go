@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"yujixinjiang/backend/internal/model"
@@ -119,9 +120,11 @@ func usageIsGroupBuyPurchase(db *gorm.DB, usage *model.UserInventoryUsage) (bool
 	return isGroupBuyPurchaseType(purchaseType), nil
 }
 
-// markUsageExpireRefundReview 拼团过期：作废核销码并进入管理员退款审核（不自动退款）。
-func (s *OrderService) markUsageExpireRefundReview(usage *model.UserInventoryUsage) error {
-	reason := "商品已过期待退款审核"
+// markUsageRefundReview 待核销拼团：作废核销码并进入管理员退款审核（不自动退款）。
+func (s *OrderService) markUsageRefundReview(usage *model.UserInventoryUsage, reason string) error {
+	if strings.TrimSpace(reason) == "" {
+		reason = "待退款审核"
+	}
 	return s.DB.Transaction(func(tx *gorm.DB) error {
 		var locked model.UserInventoryUsage
 		if err := query.NotDeleted(tx.Clauses(clause.Locking{Strength: "UPDATE"})).
@@ -145,8 +148,7 @@ func (s *OrderService) markUsageExpireRefundReview(usage *model.UserInventoryUsa
 	})
 }
 
-// ExpireStalePendingVerifyUsages 扫描已过期的自取待核销：
-// 拼团 → 退款待审核；其它渠道 → 自动退款。
+// ExpireStalePendingVerifyUsages 扫描已过期的自取待核销：拼团与其它渠道均自动退款（拼团不经审核）。
 func (s *OrderService) ExpireStalePendingVerifyUsages(now time.Time) (int, error) {
 	var list []model.UserInventoryUsage
 	if err := query.NotDeleted(s.DB).
@@ -169,21 +171,16 @@ func (s *OrderService) ExpireStalePendingVerifyUsages(now time.Time) (int, error
 			}
 			continue
 		}
+		var refundErr error
 		if isGroup {
-			if err := s.markUsageExpireRefundReview(&u); err != nil {
-				log.Printf("[usage-expire] mark review usage %d failed: %v", u.ID, err)
-				if firstErr == nil {
-					firstErr = fmt.Errorf("expire usage %d: %w", u.ID, err)
-				}
-				continue
-			}
-			n++
-			continue
+			_, refundErr = s.RefundPendingVerifyUsageAllowGroup(u.AccountID, u.ID, "商品已过期自动退款")
+		} else {
+			_, refundErr = s.RefundPendingVerifyUsageWithReason(u.AccountID, u.ID, "商品已过期自动退款")
 		}
-		if _, err := s.RefundPendingVerifyUsageWithReason(u.AccountID, u.ID, "商品已过期自动退款"); err != nil {
-			log.Printf("[usage-expire] refund usage %d failed: %v", u.ID, err)
+		if refundErr != nil {
+			log.Printf("[usage-expire] refund usage %d failed: %v", u.ID, refundErr)
 			if firstErr == nil {
-				firstErr = fmt.Errorf("expire usage %d: %w", u.ID, err)
+				firstErr = fmt.Errorf("expire usage %d: %w", u.ID, refundErr)
 			}
 			continue
 		}

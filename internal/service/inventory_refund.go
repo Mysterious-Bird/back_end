@@ -20,9 +20,9 @@ var (
 	ErrInventoryRefundInvalid = errors.New("inventory refund invalid")
 )
 
-// errGroupBuyNoSelfRefund 拼团成团入袋后禁止用户自助退款（对齐美团：未成团可退，成团后须履约/联系商家）。
+// errGroupBuyNoSelfRefund 仅阻断「直接退款」；用户手动退拼团改走审核。
 func errGroupBuyNoSelfRefund() error {
-	return fmt.Errorf("%w: 拼团商品成团后不可自行退款", ErrInventoryRefundInvalid)
+	return fmt.Errorf("%w: 拼团商品成团后不可直接退款，请走审核", ErrInventoryRefundInvalid)
 }
 
 func isGroupBuyPurchaseType(purchaseType uint8) bool {
@@ -37,6 +37,8 @@ type InventoryRefundView struct {
 	OrderID       uint64  `json:"order_id"`
 	RemainQty     uint32  `json:"remain_qty"`
 	RefundPending bool    `json:"refund_pending"` // 微信退款已提交、待回调到账
+	NeedsReview   bool    `json:"needs_review,omitempty"` // 拼团手动退：已提交管理员审核
+	Message       string  `json:"message,omitempty"`
 }
 
 // InventoryRefundSource 背包内某一来源订单的可退批次（同商品不同成交价分开展示）。
@@ -119,6 +121,8 @@ func (s *OrderService) RefundInventory(accountID, inventoryID uint64, quantity u
 	}
 
 	var result InventoryRefundView
+	var reviewQty uint32
+	var immediateRefundOrderID uint64
 	err := s.runTx(func(tx *gorm.DB) error {
 		var inv model.UserInventory
 		if err := query.NotDeleted(tx.Clauses(clause.Locking{Strength: "UPDATE"})).
@@ -151,10 +155,27 @@ func (s *OrderService) RefundInventory(accountID, inventoryID uint64, quantity u
 		var totalRefund float64
 		var primaryOrderID uint64
 		var totalQty uint32
+		needsReview := false
 		remark := "背包未使用退款"
 		for _, a := range allocs {
 			if primaryOrderID == 0 {
 				primaryOrderID = a.OrderID
+			}
+			meta, metaErr := loadOrderRefundMeta(tx, a.OrderID, inv.ProductID, inv.Spec)
+			if metaErr != nil {
+				return metaErr
+			}
+			if isGroupBuyPurchaseType(meta.PurchaseType) {
+				if err := s.submitBagGroupBuyRefundReviewInTx(tx, accountID, &inv, a); err != nil {
+					return err
+				}
+				needsReview = true
+				reviewQty += a.Quantity
+				totalQty += a.Quantity
+				continue
+			}
+			if immediateRefundOrderID == 0 {
+				immediateRefundOrderID = a.OrderID
 			}
 			if err := s.refundAmountInTx(tx, a.OrderID, a.Amount, "背包未使用退款"); err != nil {
 				if errors.Is(err, payment.ErrInvalidState) {
@@ -208,23 +229,94 @@ func (s *OrderService) RefundInventory(accountID, inventoryID uint64, quantity u
 			RefundAmount: math.Round(totalRefund*100) / 100,
 			OrderID:      primaryOrderID,
 			RemainQty:    after.Quantity,
+			NeedsReview:  needsReview,
+		}
+		if needsReview {
+			if totalRefund > 0 {
+				result.Message = fmt.Sprintf("拼团 %d 件已提交审核；其余 ¥%.2f 已原路退回", reviewQty, math.Round(totalRefund*100)/100)
+			} else {
+				result.Message = "拼团退款已提交审核，请等待管理员处理"
+			}
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	if result.OrderID > 0 {
+	refundStatusOrderID := immediateRefundOrderID
+	if refundStatusOrderID == 0 {
+		refundStatusOrderID = result.OrderID
+	}
+	if refundStatusOrderID > 0 && result.RefundAmount > 0 {
 		var o model.Order
-		if e := query.NotDeleted(s.DB).Select("pay_status").First(&o, result.OrderID).Error; e == nil {
+		if e := query.NotDeleted(s.DB).Select("pay_status").First(&o, refundStatusOrderID).Error; e == nil {
 			result.RefundPending = o.PayStatus == model.PayStatusRefunding
 		}
+	}
+	if result.RefundPending && result.NeedsReview && reviewQty > 0 && result.RefundAmount > 0 {
+		result.Message = fmt.Sprintf("拼团 %d 件已提交审核；其余 ¥%.2f 退款处理中", reviewQty, result.RefundAmount)
 	}
 	return &result, nil
 }
 
-// RefundPendingVerifyUsage 待核销使用记录退款：作废核销码、取消 usage，不回滚回背包。
+// submitBagGroupBuyRefundReviewInTx 背包拼团件数进入退款审核（扣背包、建 usage，不退款）。
+func (s *OrderService) submitBagGroupBuyRefundReviewInTx(tx *gorm.DB, accountID uint64, inv *model.UserInventory, a refundAlloc) error {
+	if a.Quantity == 0 || a.OrderID == 0 {
+		return fmt.Errorf("%w: 拼团退款审核参数无效", ErrInventoryRefundInvalid)
+	}
+	var order model.Order
+	if err := query.NotDeleted(tx).Select("id", "merchant_id").First(&order, a.OrderID).Error; err != nil {
+		return err
+	}
+	reason := "用户申请退款"
+	usage := model.UserInventoryUsage{
+		AccountID:       accountID,
+		InventoryID:     inv.ID,
+		ProductID:       inv.ProductID,
+		MerchantID:      order.MerchantID,
+		UsageMerchantID: order.MerchantID,
+		SourceOrderID:   &a.OrderID,
+		Quantity:        a.Quantity,
+		DeliveryType:    model.DeliveryTypePickup,
+		Status:          model.InventoryUsageRefundReview,
+		CancelReason:    &reason,
+	}
+	if err := tx.Create(&usage).Error; err != nil {
+		return err
+	}
+	remark := "拼团退款待审核"
+	oid := a.OrderID
+	uid := usage.ID
+	return s.InventorySvc.adjustQuantity(tx, accountID, inv.ProductID, inv.Spec,
+		-int32(a.Quantity), &oid, &uid, model.InventoryEventUse, &remark)
+}
+
+// RefundPendingVerifyUsage 待核销退款。拼团成团单 → 提交审核；其它 → 直接退款。
 func (s *OrderService) RefundPendingVerifyUsage(accountID, usageID uint64) (*InventoryRefundView, error) {
+	var usage model.UserInventoryUsage
+	if err := query.NotDeleted(s.DB).Select("id", "account_id", "product_id", "source_order_id", "status", "quantity", "inventory_id").
+		Where("id = ? AND account_id = ?", usageID, accountID).First(&usage).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrInventoryUsageNotFound
+		}
+		return nil, err
+	}
+	isGroup, err := usageIsGroupBuyPurchase(s.DB, &usage)
+	if err != nil {
+		return nil, err
+	}
+	if isGroup {
+		if err := s.markUsageRefundReview(&usage, "用户申请退款"); err != nil {
+			return nil, err
+		}
+		return &InventoryRefundView{
+			InventoryID: usage.InventoryID,
+			ProductID:   usage.ProductID,
+			Quantity:    usage.Quantity,
+			NeedsReview: true,
+			Message:     "已提交退款审核，请等待管理员处理",
+		}, nil
+	}
 	return s.RefundPendingVerifyUsageWithReason(accountID, usageID, "待核销退款")
 }
 
@@ -246,7 +338,19 @@ func (s *OrderService) RefundPendingVerifyUsageWithReason(accountID, usageID uin
 	})
 }
 
-// AdminApproveExpireRefund 管理员通过拼团过期退款审核（可绕过「成团后不可自行退款」）。
+// RefundPendingVerifyUsageAllowGroup 过期等系统场景：允许直接退拼团成团单（不经审核）。
+func (s *OrderService) RefundPendingVerifyUsageAllowGroup(accountID, usageID uint64, reason string) (*InventoryRefundView, error) {
+	if strings.TrimSpace(reason) == "" {
+		reason = "商品已过期自动退款"
+	}
+	return s.refundPendingVerifyUsage(accountID, usageID, pendingVerifyRefundOpts{
+		reason:         reason,
+		allowedStatuses: []uint8{model.InventoryUsagePendingVerify},
+		allowGroupBuy:  true,
+	})
+}
+
+// AdminApproveExpireRefund 管理员通过拼团退款审核。
 func (s *OrderService) AdminApproveExpireRefund(usageID uint64) (*InventoryRefundView, error) {
 	var usage model.UserInventoryUsage
 	if err := query.NotDeleted(s.DB).Select("id", "account_id", "status").First(&usage, usageID).Error; err != nil {
@@ -259,15 +363,16 @@ func (s *OrderService) AdminApproveExpireRefund(usageID uint64) (*InventoryRefun
 		return nil, fmt.Errorf("%w: 仅退款待审核可操作", ErrInventoryRefundInvalid)
 	}
 	return s.refundPendingVerifyUsage(usage.AccountID, usageID, pendingVerifyRefundOpts{
-		reason:         "管理员审核通过：过期退款",
+		reason:         "管理员审核通过：拼团退款",
 		allowedStatuses: []uint8{model.InventoryUsageRefundReview},
 		allowGroupBuy:  true,
 	})
 }
 
-// AdminRejectExpireRefund 管理员拒绝过期退款：作废核销码、取消 usage，不退款、不回背包。
+// AdminRejectExpireRefund 管理员拒绝退款审核：作废核销码、取消 usage；
+// 若无核销码（背包直接申请审核），则回滚背包件数。
 func (s *OrderService) AdminRejectExpireRefund(usageID uint64, remark string) error {
-	reason := "管理员拒绝过期退款（作废不退）"
+	reason := "管理员拒绝退款（作废不退）"
 	if r := strings.TrimSpace(remark); r != "" {
 		reason = reason + "：" + r
 	}
@@ -292,6 +397,25 @@ func (s *OrderService) AdminRejectExpireRefund(usageID uint64, remark string) er
 		}
 		if err := InvalidateVerificationRecordsForUsage(tx, usage.ID); err != nil {
 			return err
+		}
+		var vcCount int64
+		if err := tx.Model(&model.VerificationCode{}).
+			Where("inventory_usage_id = ?", usage.ID).Count(&vcCount).Error; err != nil {
+			return err
+		}
+		// 背包直接申请审核：无核销码，拒绝时回滚件数
+		if vcCount == 0 && s.InventorySvc != nil && usage.Quantity > 0 {
+			var inv model.UserInventory
+			if err := query.NotDeleted(tx).First(&inv, usage.InventoryID).Error; err != nil {
+				return err
+			}
+			restoreRemark := "退款审核拒绝，回滚背包"
+			oid := usage.SourceOrderID
+			uid := usage.ID
+			if err := s.InventorySvc.adjustQuantity(tx, usage.AccountID, inv.ProductID, inv.Spec,
+				int32(usage.Quantity), oid, &uid, model.InventoryEventUseCancel, &restoreRemark); err != nil {
+				return err
+			}
 		}
 		return tx.Model(&usage).Updates(map[string]interface{}{
 			"status":        model.InventoryUsageCancelled,
@@ -555,10 +679,6 @@ func listRefundBatches(db *gorm.DB, accountID, productID uint64, spec string, in
 		if err != nil {
 			return nil, err
 		}
-		// 拼团入袋来源不出现在可退列表
-		if isGroupBuyPurchaseType(meta.PurchaseType) {
-			continue
-		}
 		takeQty, amount, err := planOrderItemRefundWithMeta(meta, uint32(take))
 		if err != nil {
 			// 该来源暂不可退（支付态/余额），跳过
@@ -570,13 +690,17 @@ func listRefundBatches(db *gorm.DB, accountID, productID uint64, spec string, in
 		if takeQty == 0 || !refundAmountAcceptable(meta, amount) {
 			continue
 		}
+		label := meta.Label
+		if isGroupBuyPurchaseType(meta.PurchaseType) {
+			label = "拼团价（需审核）"
+		}
 		out = append(out, refundBatch{
 			OrderID:      oid,
 			OrderNo:      meta.OrderNo,
 			Quantity:     takeQty,
 			UnitPrice:    meta.UnitPrice,
 			Amount:       amount,
-			Label:        meta.Label,
+			Label:        label,
 			PurchaseType: meta.PurchaseType,
 			ActivityID:   meta.ActivityID,
 			CreatedAt:    meta.CreatedAt,
@@ -616,9 +740,6 @@ func allocateInventoryRefundItems(tx *gorm.DB, accountID, productID uint64, spec
 		meta, metaErr := loadOrderRefundMeta(tx, it.OrderID, productID, spec)
 		if metaErr != nil {
 			return nil, metaErr
-		}
-		if isGroupBuyPurchaseType(meta.PurchaseType) {
-			return nil, errGroupBuyNoSelfRefund()
 		}
 		takeQty, amount, err := planOrderItemRefundWithMeta(meta, it.Quantity)
 		if err != nil {
@@ -668,9 +789,6 @@ func allocateInventoryRefund(tx *gorm.DB, accountID, productID uint64, spec stri
 		if metaErr != nil {
 			return nil, metaErr
 		}
-		if isGroupBuyPurchaseType(meta.PurchaseType) {
-			return nil, errGroupBuyNoSelfRefund()
-		}
 		takeQty, amount, err := planOrderItemRefundWithMeta(meta, uint32(take))
 		if err != nil {
 			return nil, err
@@ -712,8 +830,8 @@ func allocateInventoryRefund(tx *gorm.DB, accountID, productID uint64, spec stri
 			continue
 		}
 		meta, metaErr := loadOrderRefundMeta(tx, oid, productID, spec)
-		if metaErr != nil || isGroupBuyPurchaseType(meta.PurchaseType) {
-			// 拼团入袋或元数据异常：跳过，与列表一致
+		if metaErr != nil {
+			// 元数据异常：跳过，与列表一致
 			continue
 		}
 		takeQty, amount, err := planOrderItemRefundWithMeta(meta, uint32(take))
@@ -725,7 +843,7 @@ func allocateInventoryRefund(tx *gorm.DB, accountID, productID uint64, spec stri
 		need -= int32(takeQty)
 	}
 	if need > 0 {
-		return nil, fmt.Errorf("%w: 可退数量不足（拼团入袋不可退，或已使用/余额不足）", ErrInventoryRefundInvalid)
+		return nil, fmt.Errorf("%w: 可退数量不足（已使用或余额不足）", ErrInventoryRefundInvalid)
 	}
 	var inv model.UserInventory
 	invQty := quantity

@@ -171,6 +171,8 @@ func handleBargainError(c *gin.Context, err error) {
 		response.BadRequest(c, "今日帮砍次数已达上限")
 	case errors.Is(err, service.ErrBargainNoRemain):
 		response.BadRequest(c, "已砍到底价")
+	case errors.Is(err, service.ErrBargainFloorRequired):
+		response.BadRequest(c, "须砍至底价后方可购买")
 	case errors.Is(err, service.ErrBargainSelfCutDisabled):
 		response.BadRequest(c, "该商品未开启发起人自砍")
 	case errors.Is(err, service.ErrBargainConflict):
