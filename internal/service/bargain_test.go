@@ -81,6 +81,25 @@ func TestRollCutAmount_CapsAtRemain(t *testing.T) {
 	}
 }
 
+func TestRollCutAmount_NoSoftCap(t *testing.T) {
+	r := rand.New(rand.NewSource(1))
+	// remain 足够大时砍幅应完整落在配置区间 [3.9,6.9]，不再被 30% 软上限压缩
+	for i := 0; i < 100; i++ {
+		got := rollCutAmount(19.9, 3.9, 6.9, r)
+		if got < 3.9-1e-9 || got > 6.9+1e-9 {
+			t.Fatalf("got %v want in [3.9,6.9]", got)
+		}
+	}
+}
+
+func TestRollCutAmount_ExceedRemainClamped(t *testing.T) {
+	r := rand.New(rand.NewSource(1))
+	// 配置金额超过剩余可砍金额时直接取 remain
+	if got := rollCutAmount(2.0, 3.9, 6.9, r); got != 2.0 {
+		t.Fatalf("got %v want 2.0", got)
+	}
+}
+
 func TestResolveCutAmount_FixedCapsAtRemain(t *testing.T) {
 	r := rand.New(rand.NewSource(1))
 	got := resolveCutAmount(0.3, model.BargainCutModeFixed, 1.0, 1.0, r)

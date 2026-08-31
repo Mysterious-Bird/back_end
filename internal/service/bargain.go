@@ -65,8 +65,7 @@ func roundBargainMoney(v float64) float64 {
 	return math.Round(v*100) / 100
 }
 
-// rollCutAmount 在 [min,max] 与 remain 内随机砍幅；接近底价时压缩上限。
-// 最终砍幅永不大于 remain（砍完不低于底价）。
+// rollCutAmount 在 [min,max] 与 remain 内随机砍幅；配置金额超过 remain 时超出部分舍去（砍完不低于底价）。
 func rollCutAmount(remain, min, max float64, r *rand.Rand) float64 {
 	remain = roundBargainMoney(remain)
 	if remain <= 0 {
@@ -75,16 +74,9 @@ func rollCutAmount(remain, min, max float64, r *rand.Rand) float64 {
 	if max < min {
 		min, max = max, min
 	}
-	cap := remain
-	if remain > 0.5 {
-		soft := roundBargainMoney(remain * 0.3)
-		if soft > 0 && soft < cap {
-			cap = soft
-		}
-	}
 	hi := max
-	if hi > cap {
-		hi = cap
+	if hi > remain {
+		hi = remain
 	}
 	lo := min
 	if lo > hi {
