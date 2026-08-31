@@ -39,6 +39,7 @@ type OrderService struct {
 	Payment           payment.Provider
 	PayTimeoutMinutes int // 待支付订单超时分钟数，0 时由 worker 用默认值
 	AvatarPublicBase  string
+	BargainSvc        *BargainService // 用于订单详情反查砍价记录，可为 nil（未提供时内部按 DB 构造）
 }
 
 type CreateOrderInput struct {
@@ -83,6 +84,7 @@ type OrderView struct {
 	DeliveryOrderID  *uint64           `json:"delivery_order_id,omitempty"`
 	Buyer            *BuyerBrief       `json:"buyer,omitempty"`
 	GroupBuyProgress *GroupBuyProgress `json:"group_buy_progress,omitempty"`
+	Bargain          *BargainSessionView `json:"bargain,omitempty"` // 砍价成交单附带的砍价会话与每一刀记录
 }
 
 type GroupBuyProgress struct {
@@ -375,9 +377,6 @@ func (s *OrderService) Create(accountID uint64, input CreateOrderInput) (*OrderV
 		if err := tx.Create(&order).Error; err != nil {
 			return err
 		}
-		if err := s.settlePaymentInTx(tx, order.ID, payAmount, now); err != nil {
-			return err
-		}
 
 		if input.UserCouponID != nil && s.CouponSvc != nil {
 			if _, err := s.CouponSvc.ApplyForOrderInTx(tx, *input.UserCouponID, order.ID, couponCtx); err != nil {
@@ -418,6 +417,12 @@ func (s *OrderService) Create(accountID uint64, input CreateOrderInput) (*OrderV
 			if err := markBargainSessionOrdered(tx, *input.BargainSessionID, order.ID); err != nil {
 				return err
 			}
+		}
+
+		// 结算（含 0 元免支付）必须在订单明细写入之后，否则自动审核入包时
+		// 查不到 order_item 会静默跳过，出现「审核通过但未入包」。
+		if err := s.settlePaymentInTx(tx, order.ID, payAmount, now); err != nil {
+			return err
 		}
 
 		stockCh := stockChannelForOrder(product, input.PurchaseType, activityProductID != nil)
@@ -1003,10 +1008,24 @@ func (s *OrderService) GetView(accountID, orderID uint64, merchantID *uint64) (*
 	s.attachPickupCode(&view)
 	s.attachItemRefundQuantities(&view)
 	s.attachGroupBuyProgress(&view, accountID)
+	s.attachBargain(&view, order.ID)
 	if merchantID != nil || accountID == 0 {
 		s.enrichBuyer(&view)
 	}
 	return &view, nil
+}
+
+// attachBargain 若订单为砍价成交单，附上砍价会话与每一刀记录。
+func (s *OrderService) attachBargain(view *OrderView, orderID uint64) {
+	svc := s.BargainSvc
+	if svc == nil {
+		svc = &BargainService{DB: s.DB}
+	}
+	b, err := svc.GetSessionByOrder(orderID)
+	if err != nil || b == nil {
+		return
+	}
+	view.Bargain = b
 }
 
 func (s *OrderService) List(accountID uint64, merchantID *uint64, page, pageSize int, status *uint8, statusCode string, buyerAccountID *uint64, accountIDs []uint64, startDate, endDate *time.Time) ([]OrderView, int64, error) {

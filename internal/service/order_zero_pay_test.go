@@ -55,6 +55,8 @@ func setupZeroPayOrderDB(t *testing.T) *gorm.DB {
 		&model.MerchantProfile{},
 		&model.ProductCategory{},
 		&model.Product{},
+		&model.ProductOptionGroup{},
+		&model.ProductOptionItem{},
 		&model.Activity{},
 		&model.ActivityProduct{},
 		&model.BargainSession{},
@@ -62,6 +64,8 @@ func setupZeroPayOrderDB(t *testing.T) *gorm.DB {
 		&model.OrderItem{},
 		&model.UserInventory{},
 		&model.UserInventoryLog{},
+		&model.UserInventoryUsage{},
+		&model.VerificationCode{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -133,9 +137,32 @@ func TestOrderCreate_ZeroBargainPriceSettlesWithoutWallet(t *testing.T) {
 	if order.PayStatus != model.PayStatusPaid {
 		t.Fatalf("pay_status want paid, got %d", order.PayStatus)
 	}
-	if order.Status != model.OrderStatusPendingFulfill && order.MerchantReviewStage != model.MerchantReviewApproved {
-		// auto_approve 应入履约/已审
+	if order.Status != model.OrderStatusPendingFulfill || order.MerchantReviewStage != model.MerchantReviewApproved {
+		// auto_approve 应入履约且审核通过
 		t.Fatalf("status=%d review=%d want fulfill/approved", order.Status, order.MerchantReviewStage)
+	}
+
+	// 回归：0 元单自动审核必须真正入包并生成待核销核销码，
+	// 不能出现「审核通过但 order_item 之后才插入导致入包被跳过」。
+	// 入包后 AutoPickup 立即把背包转为待核销 usage，背包数量归 0，核销码落在 usage 上。
+	var creditLog model.UserInventoryLog
+	if err := db.Where("account_id = ? AND order_id = ? AND event_type = ? AND delta_qty > 0",
+		100, order.ID, model.InventoryEventOrderCredit).First(&creditLog).Error; err != nil {
+		t.Fatalf("order credit log not written: %v", err)
+	}
+	var usage model.UserInventoryUsage
+	if err := db.Where("account_id = ? AND source_order_id = ?", 100, order.ID).First(&usage).Error; err != nil {
+		t.Fatalf("pending verify usage not created: %v", err)
+	}
+	if usage.Status != model.InventoryUsagePendingVerify {
+		t.Fatalf("usage status want pending_verify, got %d", usage.Status)
+	}
+	var vc model.VerificationCode
+	if err := db.Where("inventory_usage_id = ?", usage.ID).First(&vc).Error; err != nil {
+		t.Fatalf("verification code not created: %v", err)
+	}
+	if vc.Code == "" {
+		t.Fatalf("verification code empty")
 	}
 
 	var sessAfter model.BargainSession
@@ -144,6 +171,71 @@ func TestOrderCreate_ZeroBargainPriceSettlesWithoutWallet(t *testing.T) {
 	}
 	if sessAfter.Status != model.BargainStatusOrdered {
 		t.Fatalf("bargain status want ordered, got %d", sessAfter.Status)
+	}
+}
+
+func TestRepairApprovedWithoutCredit(t *testing.T) {
+	db := setupZeroPayOrderDB(t)
+	phone := "13900000003"
+	if err := db.Create(&model.Account{ID: 102, Phone: &phone}).Error; err != nil {
+		t.Fatalf("account: %v", err)
+	}
+	seedOpenMerchant(db, 1, "店A")
+	p := seedOnShelfProduct(db, 1, "砍价品")
+
+	// 构造历史 bug 状态：订单已通过待履约，明细已存在，但从未入包（无 order_credit 流水）
+	order := model.Order{
+		OrderNo: "BROKEN001", AccountID: 102, MerchantID: 1,
+		Status: model.OrderStatusPendingFulfill, MerchantReviewStage: model.MerchantReviewApproved,
+		DeliveryType: model.DeliveryTypePickup, PayAmount: 0, PayStatus: model.PayStatusPaid,
+	}
+	if err := db.Create(&order).Error; err != nil {
+		t.Fatalf("order: %v", err)
+	}
+	if err := db.Create(&model.OrderItem{
+		OrderID: order.ID, ProductID: p.ID, ProductName: p.Name,
+		UnitPrice: 0, Quantity: 1, Subtotal: 0,
+	}).Error; err != nil {
+		t.Fatalf("item: %v", err)
+	}
+
+	svc := &OrderService{
+		DB:           db,
+		InventorySvc: &InventoryService{DB: db},
+	}
+	if err := svc.RepairApprovedWithoutCredit(order.ID); err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+
+	var creditLog model.UserInventoryLog
+	if err := db.Where("order_id = ? AND event_type = ? AND delta_qty > 0",
+		order.ID, model.InventoryEventOrderCredit).First(&creditLog).Error; err != nil {
+		t.Fatalf("order credit log not written after repair: %v", err)
+	}
+	var usage model.UserInventoryUsage
+	if err := db.Where("account_id = ? AND source_order_id = ?", 102, order.ID).First(&usage).Error; err != nil {
+		t.Fatalf("pending verify usage not created after repair: %v", err)
+	}
+	if usage.Status != model.InventoryUsagePendingVerify {
+		t.Fatalf("usage status want pending_verify, got %d", usage.Status)
+	}
+	var vc model.VerificationCode
+	if err := db.Where("inventory_usage_id = ?", usage.ID).First(&vc).Error; err != nil {
+		t.Fatalf("verification code not created after repair: %v", err)
+	}
+
+	// 幂等：再次修复不应重复入账
+	if err := svc.RepairApprovedWithoutCredit(order.ID); err != nil {
+		t.Fatalf("repair idempotent rerun: %v", err)
+	}
+	var credits int64
+	if err := db.Model(&model.UserInventoryLog{}).
+		Where("order_id = ? AND event_type = ?", order.ID, model.InventoryEventOrderCredit).
+		Count(&credits).Error; err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if credits != 1 {
+		t.Fatalf("credit log count want 1 after rerun, got %d", credits)
 	}
 }
 

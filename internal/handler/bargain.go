@@ -95,6 +95,40 @@ func (h *BargainHandler) Cancel(c *gin.Context) {
 	response.OK(c, view)
 }
 
+// ListAdmin 管理端砍价记录：status=1 进行中 / 2 已成交；不传返回进行中+已成交。
+// 支持 page/page_size/merchant_id/keyword 分页与筛选。
+func (h *BargainHandler) ListAdmin(c *gin.Context) {
+	var status uint8
+	if raw := strings.TrimSpace(c.Query("status")); raw != "" {
+		n, err := strconv.ParseUint(raw, 10, 8)
+		if err != nil {
+			response.BadRequest(c, "status 无效")
+			return
+		}
+		status = uint8(n)
+	}
+	f := service.BargainListFilter{
+		Status:     status,
+		Keyword:    strings.TrimSpace(c.Query("keyword")),
+		StartDate:  strings.TrimSpace(c.Query("start_date")),
+		EndDate:    strings.TrimSpace(c.Query("end_date")),
+		Page:       parsePositiveInt(c.Query("page"), 1),
+		PageSize:   parsePositiveInt(c.Query("page_size"), 50),
+	}
+	if raw := strings.TrimSpace(c.Query("merchant_id")); raw != "" {
+		if mid, err := strconv.ParseUint(raw, 10, 64); err == nil {
+			f.MerchantID = mid
+		}
+	}
+	list, total, err := h.BargainSvc.ListAll(f)
+	if err != nil {
+		c.Error(err)
+		response.InternalError(c, "加载砍价记录失败")
+		return
+	}
+	response.OK(c, gin.H{"list": list, "total": total})
+}
+
 func (h *BargainHandler) ListMine(c *gin.Context) {
 	accountID, ok := auth.AccountID(c)
 	if !ok {
@@ -191,4 +225,16 @@ func handleBargainError(c *gin.Context, err error) {
 		c.Error(err)
 		response.InternalError(c, "砍价失败")
 	}
+}
+
+// parsePositiveInt 解析非负整数查询参数，非法或为空返回默认值。
+func parsePositiveInt(raw string, def int) int {
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return def
+	}
+	return n
 }

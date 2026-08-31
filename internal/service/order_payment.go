@@ -163,6 +163,11 @@ func (s *OrderService) maybeAutoApproveInTx(tx *gorm.DB, orderID uint64) error {
 	if err := query.NotDeleted(tx).Where("order_id = ?", orderID).Find(&items).Error; err != nil {
 		return err
 	}
+	// 明细缺失时保持待审，禁止出现「审核通过但未入包」的假通过。
+	// 正常情况下订单明细先于结算写入；此分支仅兜底异常时序。
+	if len(items) == 0 {
+		return nil
+	}
 	if err := s.creditOrderInventory(tx, order.AccountID, orderID, items); err != nil {
 		return err
 	}
@@ -172,6 +177,46 @@ func (s *OrderService) maybeAutoApproveInTx(tx *gorm.DB, orderID uint64) error {
 		}
 	}
 	return tx.Model(&order).Update("merchant_review_stage", model.MerchantReviewApproved).Error
+}
+
+// RepairApprovedWithoutCredit 修复「已审核通过但未入包」的异常订单（历史 0 元单时序 bug
+// 造成 order_item 晚于自动审核写入，入包被静默跳过）。补入包并生成待核销核销码，幂等：
+// 已有 order_credit 流水的订单不会重复入账。
+func (s *OrderService) RepairApprovedWithoutCredit(orderID uint64) error {
+	return s.DB.Transaction(func(tx *gorm.DB) error {
+		var order model.Order
+		if err := query.NotDeleted(tx).First(&order, orderID).Error; err != nil {
+			return err
+		}
+		if order.Status != model.OrderStatusPendingFulfill || order.MerchantReviewStage != model.MerchantReviewApproved {
+			return fmt.Errorf("order %d 状态不是已通过待履约（status=%d review=%d）", orderID, order.Status, order.MerchantReviewStage)
+		}
+		var credited int64
+		if err := query.NotDeleted(tx.Model(&model.UserInventoryLog{})).
+			Where("order_id = ? AND event_type = ?", orderID, model.InventoryEventOrderCredit).
+			Count(&credited).Error; err != nil {
+			return err
+		}
+		if credited > 0 {
+			return nil
+		}
+		var items []model.OrderItem
+		if err := query.NotDeleted(tx).Where("order_id = ?", orderID).Find(&items).Error; err != nil {
+			return err
+		}
+		if len(items) == 0 {
+			return fmt.Errorf("order %d 无订单明细，无法入包", orderID)
+		}
+		if err := s.creditOrderInventory(tx, order.AccountID, orderID, items); err != nil {
+			return err
+		}
+		if s.InventorySvc != nil {
+			if err := s.InventorySvc.AutoPickupAfterCredit(tx, order.AccountID, orderID, resolveUsageMerchantID(&order)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // healPendingIfAutoApprove 自动审核店铺下，把卡死的待审单标为已通过（入背包幂等）。

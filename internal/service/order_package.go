@@ -304,9 +304,6 @@ func (s *OrderService) CreatePackage(accountID uint64, input CreatePackageOrderI
 		if err := tx.Create(&order).Error; err != nil {
 			return err
 		}
-		if err := s.settlePaymentInTx(tx, order.ID, payAmount, now); err != nil {
-			return err
-		}
 
 		if input.UserCouponID != nil && s.CouponSvc != nil {
 			if _, err := s.CouponSvc.ApplyForOrderInTx(tx, *input.UserCouponID, order.ID, couponCtx); err != nil {
@@ -333,6 +330,12 @@ func (s *OrderService) CreatePackage(accountID uint64, input CreatePackageOrderI
 			UnitPrice: unitPrice, Quantity: qty, Subtotal: subtotal,
 		}
 		if err := tx.Create(&pkgItem).Error; err != nil {
+			return err
+		}
+
+		// 结算（含 0 元免支付）必须在订单明细写入之后，否则自动审核入包时
+		// 查不到 order_item 会静默跳过，出现「审核通过但未入包」。
+		if err := s.settlePaymentInTx(tx, order.ID, payAmount, now); err != nil {
 			return err
 		}
 		stockCh := stockChannelForOrder(pkg, input.PurchaseType, activityProductID != nil)

@@ -220,9 +220,6 @@ func (s *OrderService) CheckoutCart(accountID uint64, input CheckoutCartInput) (
 		if err := tx.Create(&order).Error; err != nil {
 			return err
 		}
-		if err := s.settlePaymentInTx(tx, order.ID, payAmount, now); err != nil {
-			return err
-		}
 		if input.UserCouponID != nil && s.CouponSvc != nil {
 			if _, err := s.CouponSvc.ApplyForOrderInTx(tx, *input.UserCouponID, order.ID, couponCtx); err != nil {
 				return err
@@ -247,6 +244,12 @@ func (s *OrderService) CheckoutCart(accountID uint64, input CheckoutCartInput) (
 			if err := query.SoftDelete(tx, &model.CartItem{}, "id = ? AND account_id = ?", ln.Cart.ID, accountID).Error; err != nil {
 				return err
 			}
+		}
+
+		// 结算（含 0 元免支付）必须在订单明细写入之后，否则自动审核入包时
+		// 查不到 order_item 会静默跳过，出现「审核通过但未入包」。
+		if err := s.settlePaymentInTx(tx, order.ID, payAmount, now); err != nil {
+			return err
 		}
 		return nil
 	})

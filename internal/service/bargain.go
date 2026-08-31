@@ -46,6 +46,7 @@ type BargainSessionView struct {
 	model.BargainSession
 	ProductName      string            `json:"product_name"`
 	ProductCover     string            `json:"product_cover"`
+	InitiatorNickname string           `json:"initiator_nickname,omitempty"`
 	CanBuy           bool              `json:"can_buy"`
 	CanHelp          bool              `json:"can_help"`
 	CanSelfCut       bool              `json:"can_self_cut"`
@@ -547,6 +548,28 @@ func (s *BargainService) GetSession(sessionID uint64, viewerAccountID *uint64) (
 	return view, nil
 }
 
+// GetSessionByOrder 按砍价成交订单反查砍价会话（含每一刀 helps 明细与商品信息）。
+// 若该订单不是砍价成交单，返回 nil, nil。
+func (s *BargainService) GetSessionByOrder(orderID uint64) (*BargainSessionView, error) {
+	if orderID == 0 {
+		return nil, nil
+	}
+	var sess model.BargainSession
+	if err := query.NotDeleted(s.DB).
+		Where("order_id = ?", orderID).
+		First(&sess).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	product, err := s.loadBargainProductForView(s.DB, sess.ActivityProductID)
+	if err != nil {
+		return nil, err
+	}
+	return s.buildView(s.DB, &sess, product, nil)
+}
+
 // ListMine 发起人自己的砍价会话；默认仅进行中（含读时过期）。
 func (s *BargainService) ListMine(accountID uint64, statusFilter *uint8) ([]BargainSessionView, error) {
 	now := time.Now()
@@ -583,6 +606,115 @@ func (s *BargainService) ListMine(accountID uint64, statusFilter *uint8) ([]Barg
 		out = append(out, *view)
 	}
 	return out, nil
+}
+
+// BargainListFilter 管理端砍价记录查询条件。
+type BargainListFilter struct {
+	Status     uint8   // 0=进行中+已成交；1=进行中；2=已成交
+	MerchantID uint64  // 商家过滤
+	Keyword    string  // 匹配商品名 / 发起人昵称（子串）
+	StartDate  string  // 起始日期（含），YYYY-MM-DD
+	EndDate    string  // 结束日期（不含），YYYY-MM-DD
+	Page       int     // 从 1 开始
+	PageSize   int     // 默认 50
+}
+
+// ListAll 管理端浏览砍价会话，支持分页与筛选。每个会话附带商品信息与每一刀 helps 明细。
+// 历史回显不做活动时效校验（已结束/下线活动的砍价记录仍可见）。
+func (s *BargainService) ListAll(f BargainListFilter) ([]BargainSessionView, int64, error) {
+	if f.Page < 1 {
+		f.Page = 1
+	}
+	if f.PageSize < 1 {
+		f.PageSize = 50
+	}
+	q := query.NotDeleted(s.DB)
+	if f.Status != 0 {
+		q = q.Where("status = ?", f.Status)
+	} else {
+		q = q.Where("status IN ?", []uint8{model.BargainStatusOngoing, model.BargainStatusOrdered})
+	}
+	if f.MerchantID > 0 {
+		q = q.Where("merchant_id = ?", f.MerchantID)
+	}
+	if f.StartDate != "" {
+		if start, err := time.ParseInLocation("2006-01-02", f.StartDate, time.Local); err == nil {
+			q = q.Where("created_at >= ?", start)
+		}
+	}
+	if f.EndDate != "" {
+		if end, err := time.ParseInLocation("2006-01-02", f.EndDate, time.Local); err == nil {
+			q = q.Where("created_at < ?", end.AddDate(0, 0, 1))
+		}
+	}
+	if kw := strings.TrimSpace(f.Keyword); kw != "" {
+		ids := s.sessionIDsByKeyword(kw)
+		if len(ids) == 0 {
+			return []BargainSessionView{}, 0, nil
+		}
+		q = q.Where("id IN ?", ids)
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var rows []model.BargainSession
+	if err := q.Order("id DESC").Offset((f.Page - 1) * f.PageSize).Limit(f.PageSize).Find(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	out := make([]BargainSessionView, 0, len(rows))
+	for i := range rows {
+		sess := rows[i]
+		product, err := s.loadBargainProductForView(s.DB, sess.ActivityProductID)
+		if err != nil {
+			continue
+		}
+		view, err := s.buildView(s.DB, &sess, product, nil)
+		if err != nil {
+			continue
+		}
+		out = append(out, *view)
+	}
+	return out, total, nil
+}
+
+// sessionIDsByKeyword 按商品名或发起人昵称子串匹配，返回符合条件的砍价会话 id。
+func (s *BargainService) sessionIDsByKeyword(kw string) []uint64 {
+	kwLike := "%" + kw + "%"
+	// 1) 商品名匹配：bargain_session -> activity_product -> product
+	var byProduct []uint64
+	s.DB.Table("bargain_session bs").
+		Select("bs.id").
+		Joins("JOIN activity_product ap ON ap.id = bs.activity_product_id AND ap.is_deleted = ?", model.NotDeleted).
+		Joins("JOIN product p ON p.id = ap.product_id AND p.is_deleted = ?", model.NotDeleted).
+		Where("bs.is_deleted = ? AND p.name LIKE ?", model.NotDeleted, kwLike).
+		Pluck("bs.id", &byProduct)
+
+	// 2) 发起人昵称匹配：bargain_session -> account(initiator)
+	var byInitiator []uint64
+	s.DB.Table("bargain_session bs").
+		Select("bs.id").
+		Joins("JOIN account a ON a.id = bs.initiator_account_id AND a.is_deleted = ?", model.NotDeleted).
+		Where("bs.is_deleted = ? AND a.nickname LIKE ?", model.NotDeleted, kwLike).
+		Pluck("bs.id", &byInitiator)
+
+	seen := map[uint64]struct{}{}
+	out := make([]uint64, 0)
+	for _, id := range byProduct {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	for _, id := range byInitiator {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }
 
 func (s *BargainService) CountMineOngoing(accountID uint64) (int64, error) {
@@ -633,6 +765,26 @@ func (s *BargainService) loadBargainAP(tx *gorm.DB, activityProductID uint64) (*
 	return &ap, &act, ap.Product, nil
 }
 
+// loadBargainProductForView 供历史回显（订单详情/管理端列表）使用：只加载商品信息，
+// 不做活动时效校验（砍价记录须覆盖已结束/已下线活动的历史数据）。
+func (s *BargainService) loadBargainProductForView(tx *gorm.DB, activityProductID uint64) (*model.Product, error) {
+	var ap model.ActivityProduct
+	if err := query.NotDeleted(tx).Preload("Product").First(&ap, activityProductID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrActivityProductNotFound
+		}
+		return nil, err
+	}
+	if ap.Product == nil || ap.Product.ID == 0 {
+		var p model.Product
+		if err := query.NotDeleted(tx).First(&p, ap.ProductID).Error; err != nil {
+			return nil, err
+		}
+		ap.Product = &p
+	}
+	return ap.Product, nil
+}
+
 func (s *BargainService) buildView(tx *gorm.DB, sess *model.BargainSession, product *model.Product, viewer *uint64) (*BargainSessionView, error) {
 	var helps []model.BargainHelp
 	if err := tx.Where("session_id = ?", sess.ID).Order("id ASC").Find(&helps).Error; err != nil {
@@ -663,6 +815,20 @@ func (s *BargainService) buildView(tx *gorm.DB, sess *model.BargainSession, prod
 				avatarByID[a.ID] = strings.TrimSpace(*a.AvatarURL)
 			}
 		}
+	}
+	// 发起人昵称（管理端砍价记录展示）：仅当不在 helper 集合里时单独查询，避免重复。
+	initiatorNick := ""
+	if _, inHelpers := nickByID[sess.InitiatorAccountID]; !inHelpers {
+		var initAcct model.Account
+		if err := query.NotDeleted(tx).Select("nickname").
+			Where("id = ?", sess.InitiatorAccountID).
+			First(&initAcct).Error; err == nil && initAcct.Nickname != nil && strings.TrimSpace(*initAcct.Nickname) != "" {
+			initiatorNick = strings.TrimSpace(*initAcct.Nickname)
+		} else {
+			initiatorNick = fmt.Sprintf("用户%d", sess.InitiatorAccountID)
+		}
+	} else {
+		initiatorNick = nickByID[sess.InitiatorAccountID]
 	}
 	hv := make([]BargainHelpView, 0, len(helps))
 	already := false
@@ -736,18 +902,19 @@ func (s *BargainService) buildView(tx *gorm.DB, sess *model.BargainSession, prod
 		guide = fmt.Sprintf("已砍至 ¥%.2f · 须砍至底价 ¥%.2f 后方可购买", sess.CurrentPrice, sess.FloorPrice)
 	}
 	return &BargainSessionView{
-		BargainSession: *sess,
-		ProductName:    name,
-		ProductCover:   cover,
-		CanBuy:         canBuy,
-		CanHelp:        canHelp,
-		CanSelfCut:     canSelfCut,
-		CanCancel:      canCancel,
-		RequireFloor:   requireFloor,
-		IsInitiator:    isInit,
-		AlreadyHelped:  already,
-		GuideText:      guide,
-		Helps:          hv,
+		BargainSession:    *sess,
+		ProductName:       name,
+		ProductCover:      cover,
+		InitiatorNickname: initiatorNick,
+		CanBuy:            canBuy,
+		CanHelp:           canHelp,
+		CanSelfCut:        canSelfCut,
+		CanCancel:         canCancel,
+		RequireFloor:      requireFloor,
+		IsInitiator:       isInit,
+		AlreadyHelped:     already,
+		GuideText:         guide,
+		Helps:             hv,
 	}, nil
 }
 

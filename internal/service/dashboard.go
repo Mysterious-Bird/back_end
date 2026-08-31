@@ -70,6 +70,7 @@ type MerchantDashboard struct {
 	ProductCount           int64              `json:"product_count"`
 	PendingOrderReview     int64              `json:"pending_order_review"`
 	PendingUseReview       int64              `json:"pending_use_review"`
+	PendingCancelReview    int64              `json:"pending_cancel_review"`
 	PendingPreparingCount  int64              `json:"pending_preparing_count"`
 	TodayVerificationCount int64              `json:"today_verification_count"`
 	LowStockCount          int64              `json:"low_stock_count"`
@@ -124,6 +125,8 @@ type SalesCompletedItem struct {
 	ActivityID      *uint64 `json:"activity_id,omitempty"`
 	SaleChannel     string  `json:"sale_channel,omitempty"`
 	SaleChannelText string  `json:"sale_channel_text,omitempty"`
+	IsBargain       bool    `json:"is_bargain,omitempty"`
+	BargainSessionID *uint64 `json:"bargain_session_id,omitempty"`
 }
 
 // SalesPendingItem 已付款未履约完成的明细。
@@ -145,6 +148,8 @@ type SalesPendingItem struct {
 	ActivityID      *uint64 `json:"activity_id,omitempty"`
 	SaleChannel     string  `json:"sale_channel,omitempty"`
 	SaleChannelText string  `json:"sale_channel_text,omitempty"`
+	IsBargain       bool    `json:"is_bargain,omitempty"`
+	BargainSessionID *uint64 `json:"bargain_session_id,omitempty"`
 }
 
 // ResolveSaleChannel 根据订单项购买类型与活动归属解析销售渠道。
@@ -164,11 +169,21 @@ func ResolveSaleChannel(purchaseType uint8, activityID *uint64) (string, string)
 	}
 }
 
+// ResolveSaleChannelEx 在 ResolveSaleChannel 基础上增加砍价渠道。
+// 砍价单统一归类为「砍价单」，不再与普通活动直购/团购混淆。
+func ResolveSaleChannelEx(purchaseType uint8, activityID *uint64, isBargain bool) (string, string) {
+	if isBargain {
+		return "bargain", "砍价单"
+	}
+	return ResolveSaleChannel(purchaseType, activityID)
+}
+
 // orderItemSaleMeta 聚合订单项成交单价、购买类型与活动归属。
 type orderItemSaleMeta struct {
 	UnitPrice    float64
 	PurchaseType uint8
 	ActivityID   *uint64
+	BargainSessionID *uint64 // 命中砍价会话（order_id 反查）时非空
 }
 
 type SalesReportFilter struct {
@@ -233,6 +248,10 @@ func (s *DashboardService) Merchant(merchantID uint64) (*MerchantDashboard, erro
 		"is_deleted = ? AND merchant_id = ? AND status = ? AND merchant_review_stage = ?",
 		model.NotDeleted, merchantID, model.OrderStatusPendingFulfill, model.MerchantReviewPendingUse,
 	).Count(&d.PendingUseReview)
+	s.freshDB().Model(&model.UserInventoryUsage{}).Where(
+		"is_deleted = ? AND merchant_id = ? AND status = ?",
+		model.NotDeleted, merchantID, model.InventoryUsageCancelPending,
+	).Count(&d.PendingCancelReview)
 
 	// 备餐中：订单路径（Order.status=Preparing）+ 外卖配餐中（不含背包跑腿；订单轨配送备餐已由 Order.status 覆盖）
 	s.freshDB().Model(&model.Order{}).Where(
@@ -573,9 +592,16 @@ func (s *DashboardService) listCompletedBagSalesItems(filter SalesReportFilter) 
 		unitPrice := catalogPrice
 		var pt uint8
 		var actID *uint64
+		var isBargain bool
+		var bargainSessionID *uint64
 		if u.SourceOrderID != nil {
 			if m, ok := unitByKey[orderProductKey(*u.SourceOrderID, u.ProductID)]; ok {
-				if m.UnitPrice > 0 {
+				// 砍价单用真实成交价（可能为 0），避免被目录原价兜底导致 0 元单金额错乱
+				if m.BargainSessionID != nil {
+					unitPrice = m.UnitPrice
+					isBargain = true
+					bargainSessionID = m.BargainSessionID
+				} else if m.UnitPrice > 0 {
 					unitPrice = m.UnitPrice
 				}
 				pt = m.PurchaseType
@@ -595,7 +621,7 @@ func (s *DashboardService) listCompletedBagSalesItems(filter SalesReportFilter) 
 			pkgText = u.PackageSelections.SummaryText()
 		}
 		nick, phone := s.lookupAccountBrief(u.AccountID)
-		ch, chText := ResolveSaleChannel(pt, actID)
+		ch, chText := ResolveSaleChannelEx(pt, actID, isBargain)
 		completedAt := u.UpdatedAt
 		if u.DeliveryType == model.DeliveryTypePickup {
 			if t, ok := verifiedAtByUsage[u.ID]; ok {
@@ -621,6 +647,7 @@ func (s *DashboardService) listCompletedBagSalesItems(filter SalesReportFilter) 
 			UserNickname: nick, UserPhone: phone,
 			PurchaseType: pt, ActivityID: actID,
 			SaleChannel: ch, SaleChannelText: chText,
+			IsBargain: isBargain, BargainSessionID: bargainSessionID,
 		})
 	}
 	return items, total, sum, nil
@@ -753,9 +780,16 @@ func (s *DashboardService) listPendingBagSalesItems(filter SalesReportFilter) ([
 		unitPrice := catalogPrice
 		var pt uint8
 		var actID *uint64
+		var isBargain bool
+		var bargainSessionID *uint64
 		if u.SourceOrderID != nil {
 			if m, ok := metaByKey[orderProductKey(*u.SourceOrderID, u.ProductID)]; ok {
-				if m.UnitPrice > 0 {
+				// 砍价单用真实成交价（可能为 0），避免被目录原价兜底导致 0 元单金额错乱
+				if m.BargainSessionID != nil {
+					unitPrice = m.UnitPrice
+					isBargain = true
+					bargainSessionID = m.BargainSessionID
+				} else if m.UnitPrice > 0 {
 					unitPrice = m.UnitPrice
 				}
 				pt = m.PurchaseType
@@ -765,7 +799,7 @@ func (s *DashboardService) listPendingBagSalesItems(filter SalesReportFilter) ([
 		amount := roundMoney(unitPrice * float64(u.Quantity))
 		sum += amount
 		nick, phone := s.lookupAccountBrief(u.AccountID)
-		ch, chText := ResolveSaleChannel(pt, actID)
+		ch, chText := ResolveSaleChannelEx(pt, actID, isBargain)
 		purchasedAt := u.CreatedAt
 		if u.SourceOrderID != nil {
 			if t, ok := orderPaidAt[*u.SourceOrderID]; ok {
@@ -781,6 +815,7 @@ func (s *DashboardService) listPendingBagSalesItems(filter SalesReportFilter) ([
 			UserNickname: nick, UserPhone: phone,
 			PurchaseType: pt, ActivityID: actID,
 			SaleChannel: ch, SaleChannelText: chText,
+			IsBargain: isBargain, BargainSessionID: bargainSessionID,
 		})
 	}
 	return items, total, sum, nil
@@ -1026,6 +1061,31 @@ func (s *DashboardService) loadOrderItemSaleMeta(usages []model.UserInventoryUsa
 				UnitPrice:    roundMoney(unit),
 				PurchaseType: it.PurchaseType,
 				ActivityID:   it.ActivityID,
+			}
+		}
+	}
+	// 反查砍价会话：命中 order_id 的订单标记为砍价单（sale_channel=bargain）。
+	var sessions []model.BargainSession
+	if len(orderIDs) > 0 {
+		if err := query.NotDeleted(s.freshDB().Model(&model.BargainSession{})).
+			Select("id", "order_id").
+			Where("order_id IN ?", orderIDs).
+			Find(&sessions).Error; err == nil {
+			sidByOrder := map[uint64]uint64{}
+			for _, s := range sessions {
+				if s.OrderID != nil {
+					sidByOrder[*s.OrderID] = s.ID
+				}
+			}
+			for _, it := range items {
+				if sid, ok := sidByOrder[it.OrderID]; ok {
+					key := orderProductKey(it.OrderID, it.ProductID)
+					if meta, exists := out[key]; exists {
+						sidCopy := sid
+						meta.BargainSessionID = &sidCopy
+						out[key] = meta
+					}
+				}
 			}
 		}
 	}

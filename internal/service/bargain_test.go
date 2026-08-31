@@ -27,6 +27,9 @@ func setupBargainTestDB(t *testing.T) *gorm.DB {
 		&model.BargainSession{},
 		&model.BargainHelp{},
 		&model.BargainSettings{},
+		&model.Order{},
+		&model.OrderItem{},
+		&model.UserInventoryUsage{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

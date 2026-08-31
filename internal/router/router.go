@@ -78,6 +78,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 		ActivitySvc: activitySvc, ZoneSvc: deliveryZoneSvc, Payment: payProvider,
 		PayTimeoutMinutes: cfg.Payment.PayTimeoutMinutes,
 		AvatarPublicBase:  cfg.Upload.AvatarPublicBase,
+		BargainSvc:        bargainSvc,
 	}
 	bargainSvc.OrderSvc = orderSvc
 	takeoutSvc := &service.TakeoutService{
@@ -245,6 +246,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 		admin.Use(middleware.RequireAccountTypes(model.AccountTypeAdmin))
 		admin.GET("/bargain-settings", bargainHandler.GetSettings)
 		admin.PATCH("/bargain-settings", bargainHandler.UpdateSettings)
+		admin.GET("/bargains", bargainHandler.ListAdmin)
 		registerAdminRoutes(admin, adminHandler, adminDashboardHandler, couponHandler, adminExtraHandler, announcementHandler, deliveryZoneHandler, activityHandler, fulfillmentEventHandler, homeCarouselHandler, homeFeaturedHandler)
 
 		rider := authorized.Group("/rider")
