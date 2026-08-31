@@ -65,6 +65,64 @@ func TestLoadOrderItemSaleMeta_BargainMarked(t *testing.T) {
 	}
 }
 
+// TestBargainListAll_PagingAndFilter 验证 ListAll 分页返回 total，且活动失效仍能列出历史记录。
+func TestBargainListAll_PagingAndFilter(t *testing.T) {
+	db := setupBargainTestDB(t)
+	_, ap, p := seedBargainAP(t, db)
+	// 让活动过期，复现"已结束活动"历史记录场景
+	if err := db.Model(&model.Activity{}).
+		Where("id = ?", ap.ActivityID).
+		Updates(map[string]interface{}{"end_at": time.Now().Add(-2 * time.Hour)}).Error; err != nil {
+		t.Fatalf("expire activity: %v", err)
+	}
+	order := model.Order{OrderNo: "BARGAIN_L1", AccountID: 104, MerchantID: 1,
+		Status: model.OrderStatusPendingFulfill, PayStatus: model.PayStatusPaid}
+	if err := db.Create(&order).Error; err != nil {
+		t.Fatalf("order: %v", err)
+	}
+	// 2 个已成交 + 1 个进行中
+	for i, st := range []uint8{model.BargainStatusOrdered, model.BargainStatusOrdered, model.BargainStatusOngoing} {
+		sess := model.BargainSession{
+			ActivityProductID: ap.ID, InitiatorAccountID: 104, ProductID: p.ID,
+			MerchantID: 1, OriginPrice: 29.9, FloorPrice: 9.9, CurrentPrice: 12.0,
+			Status: st, ExpireAt: time.Now().Add(time.Hour),
+		}
+		if st == model.BargainStatusOrdered {
+			oid := order.ID + uint64(i)
+			sess.OrderID = &oid
+		}
+		if err := db.Create(&sess).Error; err != nil {
+			t.Fatalf("session %d: %v", i, err)
+		}
+	}
+
+	svc := &BargainService{DB: db}
+	// status=0（不传）：进行中+已成交，共 3 条
+	list, total, err := svc.ListAll(BargainListFilter{})
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if total != 3 || len(list) != 3 {
+		t.Fatalf("want total=3 list=3, got total=%d list=%d", total, len(list))
+	}
+	// status=1 进行中：1 条
+	list, total, err = svc.ListAll(BargainListFilter{Status: model.BargainStatusOngoing})
+	if err != nil {
+		t.Fatalf("ListAll ongoing: %v", err)
+	}
+	if total != 1 || len(list) != 1 {
+		t.Fatalf("want total=1 list=1 (ongoing), got total=%d list=%d", total, len(list))
+	}
+	// 分页：start=1 size=2
+	list, total, err = svc.ListAll(BargainListFilter{PageSize: 2, Page: 1})
+	if err != nil {
+		t.Fatalf("ListAll page: %v", err)
+	}
+	if total != 3 || len(list) != 2 {
+		t.Fatalf("want total=3 list=2 (page), got total=%d list=%d", total, len(list))
+	}
+}
+
 func TestGetSessionByOrder(t *testing.T) {
 	db := setupBargainTestDB(t)
 	_, ap, p := seedBargainAP(t, db)

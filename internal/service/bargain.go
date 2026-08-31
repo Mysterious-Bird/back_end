@@ -628,11 +628,13 @@ func (s *BargainService) ListAll(f BargainListFilter) ([]BargainSessionView, int
 	if f.PageSize < 1 {
 		f.PageSize = 50
 	}
-	q := query.NotDeleted(s.DB)
+	// count/find 需要绑定 model 才能解析表名；notDeleted 用显式 Where
+	q := s.DB.Model(&model.BargainSession{}).Where("is_deleted = ?", model.NotDeleted)
 	if f.Status != 0 {
 		q = q.Where("status = ?", f.Status)
 	} else {
-		q = q.Where("status IN ?", []uint8{model.BargainStatusOngoing, model.BargainStatusOrdered})
+		// 勿用 []uint8：GORM 会被当成 binary（见 dashboard.go invalidOrderStatusInts 注释）
+		q = q.Where("status IN ?", []int{int(model.BargainStatusOngoing), int(model.BargainStatusOrdered)})
 	}
 	if f.MerchantID > 0 {
 		q = q.Where("merchant_id = ?", f.MerchantID)
