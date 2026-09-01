@@ -91,7 +91,8 @@ func (s *FulfillmentEventService) List(subjectType string, subjectID uint64, lim
 	var rows []model.FulfillmentEvent
 	err := s.DB.Model(&model.FulfillmentEvent{}).
 		Where("subject_type = ? AND subject_id = ?", subjectType, subjectID).
-		Order("id ASC").Limit(limit).Find(&rows).Error
+		// 按事件发生时间排序：回补的历史事件 id 顺序与 created_at 不一致，不能按 id 排
+		Order("created_at ASC, id ASC").Limit(limit).Find(&rows).Error
 	if err != nil {
 		if isTableMissing(err) {
 			return []FulfillmentEventView{}, nil
