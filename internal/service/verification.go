@@ -437,7 +437,7 @@ func (s *VerificationService) ListFiltered(filter VerificationListFilter) ([]Ver
 	}
 	var list []model.VerificationRecord
 	if err := base.Session(&gorm.Session{}).
-		Order("verification_record.id DESC").
+		Order("verification_record.verified_at DESC, verification_record.id DESC").
 		Offset(offset).Limit(pageSize).
 		Find(&list).Error; err != nil {
 		return nil, 0, err

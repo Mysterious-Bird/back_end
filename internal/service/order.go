@@ -1078,11 +1078,18 @@ func (s *OrderService) List(accountID uint64, merchantID *uint64, page, pageSize
 	if err := q.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
+
+	orderClause := "id DESC"
+	if statusCode == "refunded" {
+		// 记录查询「已退款」按最近退款到账时间倒序（payment_refund 聚合后与订单 1:1，不影响 Count）
+		q = q.Joins("LEFT JOIN (SELECT subject_id, MAX(created_at) AS last_refund_at FROM payment_refund WHERE subject_type = 'order' AND status = 1 GROUP BY subject_id) pr ON pr.subject_id = `order`.`id`")
+		orderClause = "pr.last_refund_at DESC, `order`.`id` DESC"
+	}
 	var orders []model.Order
 	if err := q.Preload("Items", "is_deleted = ?", model.NotDeleted).
 		Preload("Children", "is_deleted = ?", model.NotDeleted).
 		Preload("Children.Items", "is_deleted = ?", model.NotDeleted).
-		Order("id DESC").Offset(offset).Limit(pageSize).Find(&orders).Error; err != nil {
+		Order(orderClause).Offset(offset).Limit(pageSize).Find(&orders).Error; err != nil {
 		return nil, 0, err
 	}
 	views := make([]OrderView, 0, len(orders))
