@@ -83,6 +83,8 @@ type OrderView struct {
 	PickupCode       string            `json:"pickup_code,omitempty"`
 	DeliveryOrderID  *uint64           `json:"delivery_order_id,omitempty"`
 	RefundedAt       *time.Time        `json:"refunded_at,omitempty"`
+	SaleChannel      string            `json:"sale_channel,omitempty"`             // deal/group/activity_deal/activity_group/bargain
+	SaleChannelText  string            `json:"sale_channel_text,omitempty"`
 	Buyer            *BuyerBrief       `json:"buyer,omitempty"`
 	GroupBuyProgress *GroupBuyProgress `json:"group_buy_progress,omitempty"`
 	Bargain          *BargainSessionView `json:"bargain,omitempty"` // 砍价成交单附带的砍价会话与每一刀记录
@@ -1015,6 +1017,7 @@ func (s *OrderService) GetView(accountID, orderID uint64, merchantID *uint64) (*
 	s.attachPickupCode(&view)
 	s.attachItemRefundQuantities(&view)
 	s.attachRefundedAt(&view)
+	s.attachSaleChannel(&view, s.loadBargainOrderIDs([]uint64{order.ID}))
 	s.attachGroupBuyProgress(&view, accountID)
 	s.attachBargain(&view, order.ID)
 	if merchantID != nil || accountID == 0 {
@@ -1092,6 +1095,11 @@ func (s *OrderService) List(accountID uint64, merchantID *uint64, page, pageSize
 		Order(orderClause).Offset(offset).Limit(pageSize).Find(&orders).Error; err != nil {
 		return nil, 0, err
 	}
+	orderIDs := make([]uint64, 0, len(orders))
+	for i := range orders {
+		orderIDs = append(orderIDs, orders[i].ID)
+	}
+	bargainOrderSet := s.loadBargainOrderIDs(orderIDs)
 	views := make([]OrderView, 0, len(orders))
 	for i := range orders {
 		view := toOrderView(&orders[i])
@@ -1099,6 +1107,7 @@ func (s *OrderService) List(accountID uint64, merchantID *uint64, page, pageSize
 		s.attachPickupCode(&view)
 		s.attachItemRefundQuantities(&view)
 		s.attachRefundedAt(&view)
+		s.attachSaleChannel(&view, bargainOrderSet)
 		s.attachGroupBuyProgress(&view, accountID)
 		views = append(views, view)
 	}
@@ -2141,6 +2150,43 @@ func (s *OrderService) attachRefundedAt(view *OrderView) {
 		return
 	}
 	view.RefundedAt = &t
+}
+
+// attachSaleChannel 按首条订单项解析销售渠道（团购/拼团/活动直购/活动拼团/砍价）。
+func (s *OrderService) attachSaleChannel(view *OrderView, bargainOrders map[uint64]struct{}) {
+	if view == nil || view.ID == 0 {
+		return
+	}
+	_, isBargain := bargainOrders[view.ID]
+	for i := range view.Items {
+		it := view.Items[i]
+		var actID *uint64
+		if it.ActivityID != nil && *it.ActivityID > 0 {
+			actID = it.ActivityID
+		}
+		view.SaleChannel, view.SaleChannelText = ResolveSaleChannelEx(it.PurchaseType, actID, isBargain)
+		return
+	}
+}
+
+// loadBargainOrderIDs 批量查砍价成交单（order_id 命中砍价会话即视为砍价单）。
+func (s *OrderService) loadBargainOrderIDs(orderIDs []uint64) map[uint64]struct{} {
+	out := map[uint64]struct{}{}
+	if len(orderIDs) == 0 {
+		return out
+	}
+	var sids []uint64
+	if err := query.NotDeleted(s.DB.Model(&model.BargainSession{})).
+		Pluck("order_id", &sids).
+		Where("order_id IN ?", orderIDs).Error; err != nil {
+		return out
+	}
+	for _, id := range sids {
+		if id > 0 {
+			out[id] = struct{}{}
+		}
+	}
+	return out
 }
 
 func (s *OrderService) attachItemRefundQuantities(view *OrderView) {
