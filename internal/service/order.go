@@ -82,6 +82,7 @@ type OrderView struct {
 	VerifyCode       *string           `json:"verify_code,omitempty"`
 	PickupCode       string            `json:"pickup_code,omitempty"`
 	DeliveryOrderID  *uint64           `json:"delivery_order_id,omitempty"`
+	RefundedAt       *time.Time        `json:"refunded_at,omitempty"`
 	Buyer            *BuyerBrief       `json:"buyer,omitempty"`
 	GroupBuyProgress *GroupBuyProgress `json:"group_buy_progress,omitempty"`
 	Bargain          *BargainSessionView `json:"bargain,omitempty"` // 砍价成交单附带的砍价会话与每一刀记录
@@ -377,6 +378,12 @@ func (s *OrderService) Create(accountID uint64, input CreateOrderInput) (*OrderV
 		if err := tx.Create(&order).Error; err != nil {
 			return err
 		}
+		AppendFulfillmentEventInTx(tx, FulfillmentEventInput{
+			SubjectType: model.FulfillmentSubjectOrder,
+			SubjectID:   order.ID,
+			EventCode:   model.EventCreated,
+			Title:       "订单已创建",
+		})
 
 		if input.UserCouponID != nil && s.CouponSvc != nil {
 			if _, err := s.CouponSvc.ApplyForOrderInTx(tx, *input.UserCouponID, order.ID, couponCtx); err != nil {
@@ -1007,6 +1014,7 @@ func (s *OrderService) GetView(accountID, orderID uint64, merchantID *uint64) (*
 	s.attachVerifyCode(&view)
 	s.attachPickupCode(&view)
 	s.attachItemRefundQuantities(&view)
+	s.attachRefundedAt(&view)
 	s.attachGroupBuyProgress(&view, accountID)
 	s.attachBargain(&view, order.ID)
 	if merchantID != nil || accountID == 0 {
@@ -1083,6 +1091,7 @@ func (s *OrderService) List(accountID uint64, merchantID *uint64, page, pageSize
 		s.attachVerifyCode(&view)
 		s.attachPickupCode(&view)
 		s.attachItemRefundQuantities(&view)
+		s.attachRefundedAt(&view)
 		s.attachGroupBuyProgress(&view, accountID)
 		views = append(views, view)
 	}
@@ -2107,11 +2116,31 @@ func toOrderView(o *model.Order) OrderView {
 	}
 }
 
-// attachItemRefundQuantities 按库存退款流水汇总各明细已退件数，并校正「买2退1」等仍显示已入背包的问题。
+// attachRefundedAt 附带最近一次退款到账时间（取 payment_refund 回调最大时间；退款中/已退单才有）。
+func (s *OrderService) attachRefundedAt(view *OrderView) {
+	if view == nil || view.ID == 0 {
+		return
+	}
+	refunding := view.PayStatus == model.PayStatusRefunding ||
+		view.PayStatus == model.PayStatusRefunded || view.PayStatus == model.PayStatusPartialRefunded
+	if view.RefundedAmount <= 0 && view.RefundPendingAmount <= 0 && !refunding {
+		return
+	}
+	var t time.Time
+	row := s.DB.Model(&model.PaymentRefund{}).
+		Where("subject_type = ? AND subject_id = ? AND status = 1", model.PaySubjectOrder, view.ID).
+		Select("MAX(created_at)").Row()
+	if err := row.Scan(&t); err != nil || t.IsZero() {
+		return
+	}
+	view.RefundedAt = &t
+}
+
 func (s *OrderService) attachItemRefundQuantities(view *OrderView) {
 	if view == nil || view.ID == 0 {
 		return
 	}
+	// 按库存退款流水汇总各明细已退件数，并校正「买2退1」等仍显示已入背包的问题
 	applyLogs := func(orderID uint64, items []model.OrderItem) (refundedQty, totalQty uint32, out []model.OrderItem) {
 		out = items
 		if len(items) == 0 {

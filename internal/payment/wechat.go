@@ -586,6 +586,17 @@ func (p *WeChatProvider) markSubjectPaidInTx(tx *gorm.DB, sub PaySubject, at tim
 		if res.Error != nil {
 			return res.Error
 		}
+		if res.RowsAffected > 0 {
+			// 首次支付成功写履约事件（幂等重推不重复写）
+			_ = tx.Create(&model.FulfillmentEvent{
+				SubjectType: model.FulfillmentSubjectOrder,
+				SubjectID:   sub.ID,
+				EventCode:   model.EventPaid,
+				ActorRole:   model.FulfillmentActorSystem,
+				Title:       "支付成功",
+				CreatedAt:   time.Now(),
+			}).Error
+		}
 		if res.RowsAffected == 0 {
 			var o model.Order
 			if err := query.NotDeleted(tx).Select("pay_status").First(&o, sub.ID).Error; err != nil {
@@ -766,6 +777,22 @@ func (p *WeChatProvider) applyOrderRefundInTx(tx *gorm.DB, pt model.PaymentTrans
 	if status == model.PayStatusRefunded {
 		_ = query.NotDeleted(tx.Model(&model.Order{})).Where("id = ?", order.ID).
 			Update("status", model.OrderStatusRefunded).Error
+	}
+	if status == model.PayStatusRefunded || status == model.PayStatusPartialRefunded {
+		title := "部分退款到账"
+		if status == model.PayStatusRefunded {
+			title = "退款已到账"
+		}
+		detail, _ := json.Marshal(map[string]interface{}{"amount": refundYuan})
+		_ = tx.Create(&model.FulfillmentEvent{
+			SubjectType: model.FulfillmentSubjectOrder,
+			SubjectID:   order.ID,
+			EventCode:   model.EventRefundSucceeded,
+			ActorRole:   model.FulfillmentActorSystem,
+			Title:       title,
+			Detail:      detail,
+			CreatedAt:   time.Now(),
+		}).Error
 	}
 	if pt.Status != model.PayTxStatusRefunded && status == model.PayStatusRefunded {
 		_ = tx.Model(&pt).Update("status", model.PayTxStatusRefunded).Error
