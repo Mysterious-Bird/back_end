@@ -150,12 +150,24 @@ func (s *VerificationService) Verify(merchantID, operatorID uint64, code string,
 				return err
 			}
 			if s.InventorySvc != nil {
-				return s.InventorySvc.CompleteUsageByVerify(tx, usage.ID, packageUnits, optionSelections)
-			}
-			return tx.Model(&usage).Updates(map[string]interface{}{
+				if err := s.InventorySvc.CompleteUsageByVerify(tx, usage.ID, packageUnits, optionSelections); err != nil {
+					return err
+				}
+			} else if err := tx.Model(&usage).Updates(map[string]interface{}{
 				"status":            model.InventoryUsageCompleted,
 				"usage_merchant_id": merchantID,
-			}).Error
+			}).Error; err != nil {
+				return err
+			}
+			// 核销写入订单履约时间线
+			AppendFulfillmentEventInTx(tx, FulfillmentEventInput{
+				SubjectType: model.FulfillmentSubjectOrder,
+				SubjectID:   orderID,
+				EventCode:   model.EventVerified,
+				Title:       "已核销",
+				Detail:      map[string]interface{}{"code": vc.Code},
+			})
+			return nil
 		}
 
 		if resolved.orderID == nil {
@@ -172,7 +184,18 @@ func (s *VerificationService) Verify(merchantID, operatorID uint64, code string,
 		if err := tx.Create(&record).Error; err != nil {
 			return err
 		}
-		return tx.Model(&order).Update("status", model.OrderStatusCompleted).Error
+		if err := tx.Model(&order).Update("status", model.OrderStatusCompleted).Error; err != nil {
+			return err
+		}
+		// 核销写入订单履约时间线
+		AppendFulfillmentEventInTx(tx, FulfillmentEventInput{
+			SubjectType: model.FulfillmentSubjectOrder,
+			SubjectID:   order.ID,
+			EventCode:   model.EventVerified,
+			Title:       "已核销",
+			Detail:      map[string]interface{}{"code": vc.Code},
+		})
+		return nil
 	})
 	if err != nil {
 		if errors.Is(err, ErrVerifyMerchantMismatch) {
