@@ -96,6 +96,7 @@ type Order struct {
 	RefundFailed        uint8            `gorm:"not null;default:0" json:"refund_failed"`          // 微信退款发起失败待重试
 	RefundFailReason    *string          `gorm:"size:191" json:"refund_fail_reason,omitempty"`
 	RefundFailedAt      *time.Time       `json:"refund_failed_at,omitempty"`
+	RefundRetryCount    uint8            `gorm:"not null;default:0" json:"refund_retry_count"`     // 自动重试次数（手动重试清零）
 	DeliveryFee         float64          `gorm:"type:decimal(10,2);not null;default:0" json:"delivery_fee"`
 	RiderEarnings       float64          `gorm:"type:decimal(10,2);not null;default:0" json:"rider_earnings"`
 	PayStatus           uint8            `gorm:"not null;default:0" json:"pay_status"`

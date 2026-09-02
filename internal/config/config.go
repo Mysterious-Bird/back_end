@@ -32,6 +32,7 @@ type PaymentConfig struct {
 	WeChatCertPath    string // 商户证书路径（apiclient_cert.pem）
 	WeChatKeyPath     string // 商户私钥路径（apiclient_key.pem）
 	WeChatNotifyURL   string
+	RefundAlertWebhookURL string // 退款发起失败告警 webhook（钉钉/企业微信/飞书机器人均可），空则仅记日志
 	PayTimeoutMinutes int // 待支付订单超时分钟数，超时未支付则关单回滚
 }
 
@@ -108,6 +109,7 @@ func Load() (*Config, error) {
 			WeChatCertPath:    getEnv("WECHAT_PAY_CERT_PATH", ""),
 			WeChatKeyPath:     getEnv("WECHAT_PAY_KEY_PATH", ""),
 			WeChatNotifyURL:   getEnv("WECHAT_PAY_NOTIFY_URL", ""),
+			RefundAlertWebhookURL: getEnv("REFUND_ALERT_WEBHOOK_URL", ""),
 			PayTimeoutMinutes: loadPayTimeoutMinutes(),
 		},
 		Backup: loadBackupConfig(),

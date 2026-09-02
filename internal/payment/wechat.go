@@ -26,6 +26,8 @@ type WeChatProvider struct {
 	NotifyURL string
 	Enabled   bool
 	Client    *wechatv3.Client // V3 API 客户端
+	// 退款发起失败告警 webhook（可选，钉钉/企业微信/飞书机器人）
+	AlertWebhookURL string
 	// OnPaidInTx 支付成功后推进入包订单状态（含自动审核入背包）。由 OrderService 注入。
 	OnPaidInTx func(tx *gorm.DB, orderID uint64) error
 	// OnSubjectPaidInTx 支付成功后推进业务状态（外卖/跑腿等）。由对应 Service 注入。

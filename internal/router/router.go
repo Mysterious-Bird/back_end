@@ -108,6 +108,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 	startGroupExpireWorker(orderSvc)
 	startUsageExpireWorker(orderSvc)
 	startPendingPayExpireWorker(orderSvc, takeoutSvc, deliveryFeePaySvc)
+	startRefundRetryWorker(orderSvc)
 	service.MigrateBagToPendingVerifyIfEnabled(db)
 	paymentHandler := &handler.PaymentHandler{OrderSvc: orderSvc}
 	deliverySvc := &service.DeliveryService{DB: db, InventorySvc: inventorySvc, DeliveryFeePaySvc: deliveryFeePaySvc}
@@ -346,6 +347,26 @@ func startUsageExpireWorker(orderSvc *service.OrderService) {
 		}
 		run()
 		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			run()
+		}
+	}()
+}
+
+// startRefundRetryWorker 定时重试退款发起失败的订单（如微信商户账户余额不足恢复后自动补退）。
+func startRefundRetryWorker(orderSvc *service.OrderService) {
+	go func() {
+		run := func() {
+			n, err := orderSvc.RetryFailedRefunds()
+			if err != nil {
+				log.Printf("退款失败自动重试部分失败: %v (本批成功 %d)", err, n)
+			} else if n > 0 {
+				log.Printf("退款失败自动重试成功 %d 笔", n)
+			}
+		}
+		run()
+		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
 			run()

@@ -1,11 +1,14 @@
 package payment
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"math"
+	"net/http"
 	"time"
 
 	"yujixinjiang/backend/internal/model"
@@ -118,8 +121,42 @@ func dispatchWeChatRefund(job RefundJob) {
 		log.Printf("[wechat refund] order %s refund failed: %v", job.OrderNo, err)
 		releaseRefundPending(job, truncateRunes(err.Error(), 180))
 		restoreInventoryAfterRefundFail(job)
+		job.Provider.alertRefundFailure(job.OrderNo, err.Error())
 		return
 	}
+}
+
+// alertRefundFailure 退款发起失败时推送告警（配置 REFUND_ALERT_WEBHOOK_URL 时）。
+// 请求体同时带 text 与标准字段，兼容钉钉/企业微信/飞书自定义机器人及通用 webhook。
+func (p *WeChatProvider) alertRefundFailure(orderNo, errMsg string) {
+	if p == nil || p.AlertWebhookURL == "" {
+		return
+	}
+	text := fmt.Sprintf("【雨季新江】退款发起失败：订单 %s（%s），已进入自动重试，超出次数请到管理端处理", orderNo, errMsg)
+	payload := map[string]interface{}{
+		"event":    "refund_failed",
+		"order_no": orderNo,
+		"error":    errMsg,
+		"text":     text,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	go func() {
+		req, reqErr := http.NewRequest(http.MethodPost, p.AlertWebhookURL, bytes.NewReader(body))
+		if reqErr != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, doErr := client.Do(req)
+		if doErr != nil {
+			log.Printf("[wechat refund] 告警推送失败 order %s: %v", orderNo, doErr)
+			return
+		}
+		_ = resp.Body.Close()
+	}()
 }
 
 // AttachRestoreToLastRefundJob 微信 CreateRefund 失败时回滚已扣背包。

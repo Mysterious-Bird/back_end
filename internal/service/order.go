@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"strings"
 	"time"
@@ -2192,6 +2193,10 @@ func (s *OrderService) loadBargainOrderIDs(orderIDs []uint64) map[uint64]struct{
 	return out
 }
 
+// maxRefundAutoRetry 退款失败自动重试上限（worker 5 分钟一轮，10 次≈50 分钟）；
+// 超过后停止自动重试，需管理端手动「重新退款」（手动重试会清零计数）。
+const maxRefundAutoRetry = 10
+
 // AdminRetryRefund 管理端对退款发起失败的订单重新发起退款（重新预留并异步调微信）。
 func (s *OrderService) AdminRetryRefund(orderID uint64) error {
 	var order model.Order
@@ -2207,18 +2212,53 @@ func (s *OrderService) AdminRetryRefund(orderID uint64) error {
 	if order.PayStatus != model.PayStatusPaid && order.PayStatus != model.PayStatusPartialRefunded {
 		return fmt.Errorf("%w: 当前支付状态不可重试退款", ErrOrderStatusInvalid)
 	}
+	return s.retryRefundOnce(orderID, true)
+}
+
+// RetryFailedRefunds 定时重试退款发起失败的订单（如微信商户账户余额不足恢复后自动补退）。
+func (s *OrderService) RetryFailedRefunds() (int, error) {
+	var ids []uint64
+	if err := query.NotDeleted(s.DB.Model(&model.Order{})).
+		Where("refund_failed = 1 AND refund_retry_count < ? AND pay_status IN (?, ?)",
+			maxRefundAutoRetry, model.PayStatusPaid, model.PayStatusPartialRefunded).
+		Order("id ASC").Limit(20).Pluck("id", &ids).Error; err != nil {
+		return 0, err
+	}
+	n := 0
+	var firstErr error
+	for _, id := range ids {
+		if err := s.retryRefundOnce(id, false); err != nil {
+			log.Printf("[refund-retry] order %d 重试失败: %v", id, err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("order %d: %w", id, err)
+			}
+			continue
+		}
+		n++
+	}
+	return n, firstErr
+}
+
+// retryRefundOnce 单次重试：乐观清失败标记（防并发）+ 重新预留，提交后异步调微信退款。
+func (s *OrderService) retryRefundOnce(orderID uint64, manual bool) error {
 	return s.runTx(func(tx *gorm.DB) error {
-		// 乐观清标记防并发重复重试；预留成功后由 DispatchRefundJobs 异步发起微信退款
+		updates := map[string]interface{}{"refund_failed": 0}
+		if manual {
+			// 手动重试重置自动重试预算
+			updates["refund_retry_count"] = 0
+		} else {
+			updates["refund_retry_count"] = gorm.Expr("refund_retry_count + 1")
+		}
 		res := tx.Model(&model.Order{}).
 			Where("id = ? AND refund_failed = 1", orderID).
-			Update("refund_failed", 0)
+			Updates(updates)
 		if res.Error != nil {
 			return res.Error
 		}
 		if res.RowsAffected == 0 {
 			return fmt.Errorf("%w: 退款状态已变化，请刷新后重试", ErrOrderStatusInvalid)
 		}
-		return s.refundAmountInTx(tx, orderID, 0, "管理端重新退款")
+		return s.refundAmountInTx(tx, orderID, 0, "重新退款")
 	})
 }
 

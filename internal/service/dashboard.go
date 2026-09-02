@@ -57,6 +57,7 @@ type AdminDashboard struct {
 	PendingDeliveryExceptions     int64              `json:"pending_delivery_exceptions"`
 	PendingBagDeliveryReviews     int64              `json:"pending_bag_delivery_reviews"`
 	PendingExpireRefundReviews    int64              `json:"pending_expire_refund_reviews"`
+	RefundFailedOrders            int64              `json:"refund_failed_orders"` // 退款发起失败待处理（含自动重试中）
 	MerchantCount                 int64              `json:"merchant_count"`
 	ProductCount                  int64              `json:"product_count"`
 	LowStockProductCount          int64              `json:"low_stock_product_count"`
@@ -213,6 +214,9 @@ func (s *DashboardService) Admin() (*AdminDashboard, error) {
 	s.freshDB().Model(&model.UserInventoryUsage{}).
 		Where("is_deleted = ? AND status = ?", model.NotDeleted, model.InventoryUsageRefundReview).
 		Count(&d.PendingExpireRefundReviews)
+	s.freshDB().Model(&model.Order{}).
+		Where("is_deleted = ? AND refund_failed = ?", model.NotDeleted, 1).
+		Count(&d.RefundFailedOrders)
 	s.freshDB().Model(&model.MerchantProfile{}).Where("is_deleted = ?", model.NotDeleted).Count(&d.MerchantCount)
 	s.freshDB().Model(&model.Product{}).Where("is_deleted = ?", model.NotDeleted).Count(&d.ProductCount)
 	s.freshDB().Model(&model.Product{}).Where("is_deleted = ? AND stock <= ?", model.NotDeleted, 10).Count(&d.LowStockProductCount)

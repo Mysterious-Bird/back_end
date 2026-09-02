@@ -49,6 +49,7 @@ func NewProvider(cfg *config.Config, db *gorm.DB) (Provider, error) {
 			APIKey:    cfg.Payment.WeChatAPIKey,
 			NotifyURL: cfg.Payment.WeChatNotifyURL,
 			Enabled:   cfg.Payment.WeChatEnabled,
+			AlertWebhookURL: cfg.Payment.RefundAlertWebhookURL,
 			Client:    client,
 		}, nil
 	default:
