@@ -771,6 +771,8 @@ func (p *WeChatProvider) applyOrderRefundInTx(tx *gorm.DB, pt model.PaymentTrans
 		"refunded_amount":       newRefunded,
 		"refund_pending_amount": newPending,
 		"pay_status":            status,
+		"refund_failed":         0,
+		"refund_fail_reason":    nil,
 	}).Error; err != nil {
 		return err
 	}
@@ -955,6 +957,8 @@ func (p *WeChatProvider) refundOrderAmountInTx(tx *gorm.DB, sub PaySubject, amou
 			"pay_status":            model.PayStatusRefunding,
 			"refund_pending_amount": newPending,
 			"status":                model.OrderStatusRefunding,
+			"refund_failed":         0,
+			"refund_fail_reason":    nil,
 		})
 		if res.Error != nil {
 			return res.Error

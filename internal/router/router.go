@@ -514,6 +514,7 @@ func registerAdminRoutes(r *gin.RouterGroup, h *handler.AdminHandler, ad *handle
 	r.GET("/sales", ad.SalesReport)
 	r.GET("/orders", ad.ListOrders)
 	r.GET("/orders/:id", ad.GetOrder)
+	r.POST("/orders/:id/retry-refund", ad.RetryOrderRefund)
 	r.GET("/fulfillment-events", fe.ListAdminEvents)
 	r.GET("/verification-records", ad.ListVerificationRecords)
 

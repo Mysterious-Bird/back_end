@@ -1334,6 +1334,27 @@ func (h *AdminDashboardHandler) ListOrders(c *gin.Context) {
 	response.OK(c, query.PageResult{List: list, Total: total, Page: page, PageSize: pageSize})
 }
 
+// RetryOrderRefund godoc
+// @Summary      重新发起退款（管理端，退款失败单）
+// @Tags         管理端
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id   path  int  true  "订单 ID"
+// @Success      200  {object}  response.Body
+// @Router       /admin/orders/{id}/retry-refund [post]
+func (h *AdminDashboardHandler) RetryOrderRefund(c *gin.Context) {
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		response.BadRequest(c, "订单 ID 无效")
+		return
+	}
+	if err := h.OrderSvc.AdminRetryRefund(id); err != nil {
+		handleOrderError(c, err)
+		return
+	}
+	response.OK(c, nil)
+}
+
 // GetAdminOrder godoc
 // @Summary      订单详情（管理端）
 // @Tags         管理端

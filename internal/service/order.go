@@ -1084,9 +1084,9 @@ func (s *OrderService) List(accountID uint64, merchantID *uint64, page, pageSize
 
 	orderClause := "id DESC"
 	if statusCode == "refunded" {
-		// 记录查询「已退款」按最近退款到账时间倒序（payment_refund 聚合后与订单 1:1，不影响 Count）
+		// 记录查询「已退款」：退款失败单置顶，其余按最近退款到账时间倒序（payment_refund 聚合后与订单 1:1，不影响 Count）
 		q = q.Joins("LEFT JOIN (SELECT subject_id, MAX(created_at) AS last_refund_at FROM payment_refund WHERE subject_type = 'order' AND status = 1 GROUP BY subject_id) pr ON pr.subject_id = `order`.`id`")
-		orderClause = "pr.last_refund_at DESC, `order`.`id` DESC"
+		orderClause = "`order`.refund_failed DESC, pr.last_refund_at DESC, `order`.`id` DESC"
 	}
 	var orders []model.Order
 	if err := q.Preload("Items", "is_deleted = ?", model.NotDeleted).
@@ -1184,9 +1184,9 @@ func applyStatusCodeFilter(q *gorm.DB, code string) {
 	case "preparing":
 		q.Where("status = ?", model.OrderStatusPreparing)
 	case "refunded":
-		// 已退款 / 部分退款 / 退款中（记录查询「已退款」）
+		// 已退款 / 部分退款 / 退款中 / 退款发起失败（记录查询「已退款」，失败单置顶）
 		// 勿用 []uint8：GORM 会当成 binary 导致 SQL 语法错误
-		q.Where("refunded_amount > 0 OR pay_status IN (?, ?, ?)",
+		q.Where("(refunded_amount > 0 OR pay_status IN (?, ?, ?) OR refund_failed = 1)",
 			model.PayStatusRefunding, model.PayStatusRefunded, model.PayStatusPartialRefunded)
 	case "partial_refunded":
 		q.Where("pay_status = ? OR (refunded_amount > 0 AND refunded_amount + 0.0001 < pay_amount)",
@@ -2126,6 +2126,9 @@ func toOrderView(o *model.Order) OrderView {
 	case o.PayStatus == model.PayStatusPartialRefunded || o.RefundedAmount > 0.0001:
 		statusCode = "partial_refunded"
 		statusText = "部分退款"
+	case o.RefundFailed == 1:
+		statusCode = "refund_failed"
+		statusText = "退款失败"
 	}
 	return OrderView{
 		Order: *o, StatusText: statusText, StatusCode: statusCode,
@@ -2187,6 +2190,36 @@ func (s *OrderService) loadBargainOrderIDs(orderIDs []uint64) map[uint64]struct{
 		}
 	}
 	return out
+}
+
+// AdminRetryRefund 管理端对退款发起失败的订单重新发起退款（重新预留并异步调微信）。
+func (s *OrderService) AdminRetryRefund(orderID uint64) error {
+	var order model.Order
+	if err := query.NotDeleted(s.DB).First(&order, orderID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrOrderNotFound
+		}
+		return err
+	}
+	if order.RefundFailed != 1 {
+		return fmt.Errorf("%w: 订单不在退款失败状态", ErrOrderStatusInvalid)
+	}
+	if order.PayStatus != model.PayStatusPaid && order.PayStatus != model.PayStatusPartialRefunded {
+		return fmt.Errorf("%w: 当前支付状态不可重试退款", ErrOrderStatusInvalid)
+	}
+	return s.runTx(func(tx *gorm.DB) error {
+		// 乐观清标记防并发重复重试；预留成功后由 DispatchRefundJobs 异步发起微信退款
+		res := tx.Model(&model.Order{}).
+			Where("id = ? AND refund_failed = 1", orderID).
+			Update("refund_failed", 0)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return fmt.Errorf("%w: 退款状态已变化，请刷新后重试", ErrOrderStatusInvalid)
+		}
+		return s.refundAmountInTx(tx, orderID, 0, "管理端重新退款")
+	})
 }
 
 func (s *OrderService) attachItemRefundQuantities(view *OrderView) {

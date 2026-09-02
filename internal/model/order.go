@@ -93,6 +93,9 @@ type Order struct {
 	PayAmount           float64          `gorm:"type:decimal(10,2);not null" json:"pay_amount"`
 	RefundedAmount      float64          `gorm:"type:decimal(10,2);not null;default:0" json:"refunded_amount"`
 	RefundPendingAmount float64          `gorm:"type:decimal(10,2);not null;default:0" json:"refund_pending_amount"`
+	RefundFailed        uint8            `gorm:"not null;default:0" json:"refund_failed"`          // 微信退款发起失败待重试
+	RefundFailReason    *string          `gorm:"size:191" json:"refund_fail_reason,omitempty"`
+	RefundFailedAt      *time.Time       `json:"refund_failed_at,omitempty"`
 	DeliveryFee         float64          `gorm:"type:decimal(10,2);not null;default:0" json:"delivery_fee"`
 	RiderEarnings       float64          `gorm:"type:decimal(10,2);not null;default:0" json:"rider_earnings"`
 	PayStatus           uint8            `gorm:"not null;default:0" json:"pay_status"`

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"time"
 
 	"yujixinjiang/backend/internal/model"
 	"yujixinjiang/backend/internal/payment/wechatv3"
@@ -93,12 +94,12 @@ func dispatchWeChatRefund(job RefundJob) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[wechat refund] panic recovered: %v", r)
-			releaseRefundPending(job)
+			releaseRefundPending(job, "微信退款调用异常")
 			restoreInventoryAfterRefundFail(job)
 		}
 	}()
 	if job.Provider == nil || job.Provider.Client == nil {
-		releaseRefundPending(job)
+		releaseRefundPending(job, "退款服务未配置")
 		restoreInventoryAfterRefundFail(job)
 		return
 	}
@@ -115,7 +116,7 @@ func dispatchWeChatRefund(job RefundJob) {
 	})
 	if err != nil {
 		log.Printf("[wechat refund] order %s refund failed: %v", job.OrderNo, err)
-		releaseRefundPending(job)
+		releaseRefundPending(job, truncateRunes(err.Error(), 180))
 		restoreInventoryAfterRefundFail(job)
 		return
 	}
@@ -189,8 +190,8 @@ func restoreInventoryAfterRefundFail(job RefundJob) {
 	}
 }
 
-// releaseRefundPending 微信退款发起失败时释放预留，避免卡死可退余额。
-func releaseRefundPending(job RefundJob) {
+// releaseRefundPending 微信退款发起失败时释放预留，避免卡死可退余额；并标记退款失败待管理端重试。
+func releaseRefundPending(job RefundJob, reason string) {
 	if job.Provider == nil || job.Provider.DB == nil {
 		return
 	}
@@ -202,7 +203,7 @@ func releaseRefundPending(job RefundJob) {
 		releaseDeliveryFeeRefundPending(job.Provider, job.SubjectID)
 		return
 	default:
-		releaseOrderRefundPending(job.Provider, job.OrderID, job.RefundAmt)
+		releaseOrderRefundPending(job.Provider, job.OrderID, job.RefundAmt, reason)
 	}
 }
 
@@ -256,7 +257,7 @@ func releaseDeliveryFeeRefundPending(p *WeChatProvider, feeOrderID uint64) {
 	}
 }
 
-func releaseOrderRefundPending(p *WeChatProvider, orderID uint64, amount float64) {
+func releaseOrderRefundPending(p *WeChatProvider, orderID uint64, amount float64, reason string) {
 	if p == nil || p.DB == nil || orderID == 0 || amount <= 0 {
 		return
 	}
@@ -272,6 +273,7 @@ func releaseOrderRefundPending(p *WeChatProvider, orderID uint64, amount float64
 		}
 		status := order.PayStatus
 		orderStatus := (*uint8)(nil)
+		markFailed := false
 		switch {
 		case order.RefundedAmount+0.0001 >= order.PayAmount:
 			status = model.PayStatusRefunded
@@ -284,6 +286,8 @@ func releaseOrderRefundPending(p *WeChatProvider, orderID uint64, amount float64
 			// 微信发起失败且尚无已退金额：履约态从「退款中」恢复为待履约（已入背包场景）
 			s := model.OrderStatusPendingFulfill
 			orderStatus = &s
+			// 标记退款失败，供管理端重试
+			markFailed = true
 		}
 		updates := map[string]interface{}{
 			"refund_pending_amount": pending,
@@ -291,6 +295,11 @@ func releaseOrderRefundPending(p *WeChatProvider, orderID uint64, amount float64
 		}
 		if orderStatus != nil {
 			updates["status"] = *orderStatus
+		}
+		if markFailed {
+			updates["refund_failed"] = 1
+			updates["refund_fail_reason"] = reason
+			updates["refund_failed_at"] = time.Now()
 		}
 		return query.NotDeleted(tx.Model(&model.Order{})).Where("id = ?", orderID).Updates(updates).Error
 	})
