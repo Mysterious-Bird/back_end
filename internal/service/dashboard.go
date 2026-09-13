@@ -136,6 +136,9 @@ type SalesCompletedItem struct {
 	SaleChannelText string  `json:"sale_channel_text,omitempty"`
 	IsBargain       bool    `json:"is_bargain,omitempty"`
 	BargainSessionID *uint64 `json:"bargain_session_id,omitempty"`
+	// MerchantID / MerchantName 归属商家（管理端同名商品区分用）
+	MerchantID   uint64 `json:"merchant_id,omitempty"`
+	MerchantName string `json:"merchant_name,omitempty"`
 }
 
 // SalesPendingItem 已付款未履约完成的明细。
@@ -161,6 +164,9 @@ type SalesPendingItem struct {
 	BargainSessionID *uint64 `json:"bargain_session_id,omitempty"`
 	// RefundedAt 退款到账时间（仅已退款明细带）
 	RefundedAt string `json:"refunded_at,omitempty"`
+	// MerchantID / MerchantName 归属商家（管理端同名商品区分用）
+	MerchantID   uint64 `json:"merchant_id,omitempty"`
+	MerchantName string `json:"merchant_name,omitempty"`
 }
 
 // ResolveSaleChannel 根据订单项购买类型与活动归属解析销售渠道。
@@ -450,6 +456,8 @@ func mergeAllSalesItems(pending []SalesPendingItem, completed []SalesCompletedIt
 			SaleChannelText:  c.SaleChannelText,
 			IsBargain:        c.IsBargain,
 			BargainSessionID: c.BargainSessionID,
+			MerchantID:       c.MerchantID,
+			MerchantName:     c.MerchantName,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PurchasedAt > out[j].PurchasedAt })
@@ -522,7 +530,7 @@ func (s *DashboardService) listRefundedSalesItems(filter SalesReportFilter) ([]S
 
 	var orders []model.Order
 	if err := query.NotDeleted(s.freshDB().Model(&model.Order{})).
-		Select("id", "pay_amount", "refunded_amount", "paid_at", "created_at").
+		Select("id", "merchant_id", "pay_amount", "refunded_amount", "paid_at", "created_at").
 		Where("id IN ?", orderIDs).Find(&orders).Error; err != nil {
 		return nil, 0, err
 	}
@@ -617,6 +625,7 @@ func (s *DashboardService) listRefundedSalesItems(filter SalesReportFilter) ([]S
 				SaleChannel:     ch,
 				SaleChannelText: chText,
 				IsBargain:       isBargain,
+				MerchantID:      o.MerchantID,
 			})
 			totalQty += int64(it.Quantity)
 		}
@@ -624,6 +633,7 @@ func (s *DashboardService) listRefundedSalesItems(filter SalesReportFilter) ([]S
 	if len(out) > 500 {
 		out = out[:500]
 	}
+	s.fillPendingMerchantNames(out)
 	return out, totalQty, nil
 }
 
@@ -817,9 +827,11 @@ func (s *DashboardService) listCompletedBagSalesItems(filter SalesReportFilter) 
 		name := ""
 		catalogPrice := 0.0
 		isPkg := false
+		merchantID := uint64(0)
 		if u.Product != nil {
 			name = u.Product.Name
 			catalogPrice = u.Product.Price
+			merchantID = u.Product.MerchantID
 			isPkg = u.Product.ItemType == model.ProductItemTypePackage
 		}
 		unitPrice := catalogPrice
@@ -881,8 +893,10 @@ func (s *DashboardService) listCompletedBagSalesItems(filter SalesReportFilter) 
 			PurchaseType: pt, ActivityID: actID,
 			SaleChannel: ch, SaleChannelText: chText,
 			IsBargain: isBargain, BargainSessionID: bargainSessionID,
+			MerchantID: merchantID,
 		})
 	}
+	s.fillCompletedMerchantNames(items)
 	return items, total, sum, nil
 }
 
@@ -944,8 +958,10 @@ func (s *DashboardService) listCompletedTakeoutSalesItems(filter SalesReportFilt
 			PurchasedAt: formatSalesTime(purchasedAt),
 			VerifiedAt:  formatSalesTime(o.UpdatedAt),
 			UserNickname: nick, UserPhone: phone,
+			MerchantID: takeoutMerchantID(o),
 		})
 	}
+	s.fillCompletedMerchantNames(items)
 	return items, total, sum, nil
 }
 
@@ -1006,9 +1022,11 @@ func (s *DashboardService) listPendingBagSalesItems(filter SalesReportFilter) ([
 	for _, u := range usages {
 		name := ""
 		catalogPrice := 0.0
+		merchantID := uint64(0)
 		if u.Product != nil {
 			name = u.Product.Name
 			catalogPrice = u.Product.Price
+			merchantID = u.Product.MerchantID
 		}
 		unitPrice := catalogPrice
 		var pt uint8
@@ -1049,8 +1067,10 @@ func (s *DashboardService) listPendingBagSalesItems(filter SalesReportFilter) ([
 			PurchaseType: pt, ActivityID: actID,
 			SaleChannel: ch, SaleChannelText: chText,
 			IsBargain: isBargain, BargainSessionID: bargainSessionID,
+			MerchantID: merchantID,
 		})
 	}
+	s.fillPendingMerchantNames(items)
 	return items, total, sum, nil
 }
 
@@ -1114,8 +1134,10 @@ func (s *DashboardService) listPendingTakeoutSalesItems(filter SalesReportFilter
 			Quantity: qty, UnitPrice: unit, Amount: net,
 			PurchasedAt: purchasedAt, StatusText: statusText,
 			UserNickname: nick, UserPhone: phone,
+			MerchantID: takeoutMerchantID(o),
 		})
 	}
+	s.fillPendingMerchantNames(items)
 	return items, total, sum, nil
 }
 
@@ -1160,9 +1182,72 @@ func (s *DashboardService) listPendingInventorySalesItems(filter SalesReportFilt
 			StatusText:  "已入背包·待使用",
 			UserNickname: nick, UserPhone: phone,
 			SaleChannel: "deal", SaleChannelText: "团购",
+			MerchantID: inv.Product.MerchantID,
 		})
 	}
+	s.fillPendingMerchantNames(items)
 	return items, total, sum, nil
+}
+
+// loadMerchantNames 批量查商家名（管理端同名商品按商家区分）。
+func (s *DashboardService) loadMerchantNames(ids []uint64) map[uint64]string {
+	out := map[uint64]string{}
+	if len(ids) == 0 {
+		return out
+	}
+	uniq := make([]uint64, 0, len(ids))
+	seen := map[uint64]struct{}{}
+	for _, id := range ids {
+		if id == 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniq = append(uniq, id)
+	}
+	if len(uniq) == 0 {
+		return out
+	}
+	var rows []model.MerchantProfile
+	if err := query.NotDeleted(s.freshDB().Model(&model.MerchantProfile{})).
+		Select("id", "shop_name").
+		Where("id IN ?", uniq).Find(&rows).Error; err != nil {
+		return out
+	}
+	for _, r := range rows {
+		out[r.ID] = r.ShopName
+	}
+	return out
+}
+
+// fillPendingMerchantNames 回填待履约/退款明细的商家名。
+func (s *DashboardService) fillPendingMerchantNames(items []SalesPendingItem) {
+	ids := make([]uint64, 0, len(items))
+	for i := range items {
+		if items[i].MerchantID > 0 {
+			ids = append(ids, items[i].MerchantID)
+		}
+	}
+	names := s.loadMerchantNames(ids)
+	for i := range items {
+		items[i].MerchantName = names[items[i].MerchantID]
+	}
+}
+
+// fillCompletedMerchantNames 回填已核销明细的商家名。
+func (s *DashboardService) fillCompletedMerchantNames(items []SalesCompletedItem) {
+	ids := make([]uint64, 0, len(items))
+	for i := range items {
+		if items[i].MerchantID > 0 {
+			ids = append(ids, items[i].MerchantID)
+		}
+	}
+	names := s.loadMerchantNames(ids)
+	for i := range items {
+		items[i].MerchantName = names[items[i].MerchantID]
+	}
 }
 
 func (s *DashboardService) lookupAccountBrief(accountID uint64) (nickname, phone string) {
@@ -1183,6 +1268,14 @@ func (s *DashboardService) lookupAccountBrief(accountID uint64) (nickname, phone
 		phone = *acc.Phone
 	}
 	return nickname, phone
+}
+
+// takeoutMerchantID 外卖单归属商家（优先履约商家）。
+func takeoutMerchantID(o model.TakeoutOrder) uint64 {
+	if o.UsageMerchantID > 0 {
+		return o.UsageMerchantID
+	}
+	return o.MerchantID
 }
 
 func firstTakeoutProductID(items []model.TakeoutOrderItem) uint64 {
