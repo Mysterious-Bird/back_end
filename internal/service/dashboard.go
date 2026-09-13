@@ -99,6 +99,14 @@ type SalesReport struct {
 	CompletedQuantity    int64                `json:"completed_quantity"` // 已履约商品件数
 	RefundedOrderCount   int64                `json:"refunded_order_count"` // 有退款的订单数
 	RefundedAmount       float64              `json:"refunded_amount"`      // 累计退款金额
+	// 总销售：所有已支付未退款（待履约 + 已核销，不含已退款）
+	AllOrderCount  int64              `json:"all_order_count"`
+	AllQuantity    int64              `json:"all_quantity"`
+	AllSalesAmount float64            `json:"all_sales_amount"`
+	AllItems       []SalesPendingItem `json:"all_items"`
+	// 已退款明细（订单类退款，与 refunded_amount 同口径）
+	RefundedQuantity int64              `json:"refunded_quantity"`
+	RefundedItems    []SalesPendingItem `json:"refunded_items"`
 	StartDate            string               `json:"start_date,omitempty"`
 	EndDate              string               `json:"end_date,omitempty"`
 }
@@ -151,6 +159,8 @@ type SalesPendingItem struct {
 	SaleChannelText string  `json:"sale_channel_text,omitempty"`
 	IsBargain       bool    `json:"is_bargain,omitempty"`
 	BargainSessionID *uint64 `json:"bargain_session_id,omitempty"`
+	// RefundedAt 退款到账时间（仅已退款明细带）
+	RefundedAt string `json:"refunded_at,omitempty"`
 }
 
 // ResolveSaleChannel 根据订单项购买类型与活动归属解析销售渠道。
@@ -345,6 +355,19 @@ func (s *DashboardService) SalesReport(filter SalesReportFilter) (*SalesReport, 
 	}
 	report.PendingQuantity = pendingQty
 
+	// 总销售（不含已退款）= 待履约 + 已核销
+	report.AllOrderCount = pendingCount + count
+	report.AllQuantity = pendingQty + completedQty
+	report.AllSalesAmount = roundMoney(pendingAmount + amount)
+	report.AllItems = mergeAllSalesItems(pendingItems, items)
+
+	refundedItems, refundedQty, err := s.listRefundedSalesItems(filter)
+	if err != nil {
+		return nil, err
+	}
+	report.RefundedItems = refundedItems
+	report.RefundedQuantity = refundedQty
+
 	refundedCount, refundedAmount, err := s.sumRefundedOrders(filter)
 	if err != nil {
 		return nil, err
@@ -396,6 +419,212 @@ func (s *DashboardService) sumRefundedOrders(filter SalesReportFilter) (int64, f
 	}
 
 	return fromPR.Cnt + fromLocal.Cnt, fromPR.Amt + fromLocal.Amt, nil
+}
+
+// mergeAllSalesItems 合并待履约与已核销明细为「总销售」列表（均为已支付未退款）。
+func mergeAllSalesItems(pending []SalesPendingItem, completed []SalesCompletedItem) []SalesPendingItem {
+	out := make([]SalesPendingItem, 0, len(pending)+len(completed))
+	out = append(out, pending...)
+	for _, c := range completed {
+		src := c.FulfillType
+		if c.TakeoutID > 0 {
+			src = "takeout"
+		}
+		out = append(out, SalesPendingItem{
+			Source:           src,
+			ID:               c.UsageID,
+			ProductID:        c.ProductID,
+			ProductName:      c.ProductName,
+			Quantity:         c.Quantity,
+			UnitPrice:        c.UnitPrice,
+			Amount:           c.Amount,
+			PurchasedAt:      c.PurchasedAt,
+			ExpireAt:         c.ExpireAt,
+			VerifiedAt:       c.VerifiedAt,
+			StatusText:       "已完成",
+			UserNickname:     c.UserNickname,
+			UserPhone:        c.UserPhone,
+			PurchaseType:     c.PurchaseType,
+			ActivityID:       c.ActivityID,
+			SaleChannel:      c.SaleChannel,
+			SaleChannelText:  c.SaleChannelText,
+			IsBargain:        c.IsBargain,
+			BargainSessionID: c.BargainSessionID,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PurchasedAt > out[j].PurchasedAt })
+	if len(out) > 500 {
+		out = out[:500]
+	}
+	return out
+}
+
+// listRefundedSalesItems 已退款订单的商品明细（订单类退款，与 sumRefundedOrders 同口径）。
+// 明细金额按订单实退金额与原价占比分摊，件数为原购买件数；外卖退款只计金额不进明细。
+func (s *DashboardService) listRefundedSalesItems(filter SalesReportFilter) ([]SalesPendingItem, int64, error) {
+	type refundRow struct {
+		OrderID    uint64    `gorm:"column:order_id"`
+		RefundedAt time.Time `gorm:"column:refunded_at"`
+		RefundAmt  float64   `gorm:"column:refund_amt"`
+	}
+	rows := make([]refundRow, 0)
+
+	// 1) 微信退款回调记录
+	prQ := s.freshDB().Table("payment_refund AS pr").
+		Select("o.id AS order_id, MAX(pr.created_at) AS refunded_at, COALESCE(SUM(pr.refund_amount),0) AS refund_amt").
+		Joins("JOIN `order` o ON o.order_no = pr.order_no AND o.is_deleted = ?", model.NotDeleted).
+		Where("pr.status = ?", 1).
+		Group("o.id")
+	if filter.MerchantID != nil {
+		prQ = prQ.Where("o.merchant_id = ?", *filter.MerchantID)
+	}
+	prQ = applyCompletedTimeRange(prQ, "pr.created_at", filter.StartDate, filter.EndDate)
+	var prRows []refundRow
+	if err := prQ.Scan(&prRows).Error; err != nil {
+		return nil, 0, err
+	}
+	rows = append(rows, prRows...)
+
+	// 2) 无回调记录的本地退款单（零元退 / 手工标记）
+	localQ := query.NotDeleted(s.freshDB().Model(&model.Order{})).
+		Select("id AS order_id, updated_at AS refunded_at, refunded_amount AS refund_amt").
+		Where("refunded_amount > 0 OR pay_status IN (?, ?, ?)",
+			model.PayStatusRefunding, model.PayStatusRefunded, model.PayStatusPartialRefunded).
+		Where("NOT EXISTS (SELECT 1 FROM payment_refund pr WHERE pr.order_no = `order`.order_no AND pr.status = 1)")
+	if filter.MerchantID != nil {
+		localQ = localQ.Where("merchant_id = ?", *filter.MerchantID)
+	}
+	localQ = applyCompletedTimeRange(localQ, "updated_at", filter.StartDate, filter.EndDate)
+	var localRows []refundRow
+	if err := localQ.Scan(&localRows).Error; err != nil {
+		return nil, 0, err
+	}
+	rows = append(rows, localRows...)
+	if len(rows) == 0 {
+		return []SalesPendingItem{}, 0, nil
+	}
+
+	refundByOrder := make(map[uint64]refundRow, len(rows))
+	orderIDs := make([]uint64, 0, len(rows))
+	for _, r := range rows {
+		if r.OrderID == 0 {
+			continue
+		}
+		if _, ok := refundByOrder[r.OrderID]; ok {
+			continue
+		}
+		refundByOrder[r.OrderID] = r
+		orderIDs = append(orderIDs, r.OrderID)
+	}
+	if len(orderIDs) == 0 {
+		return []SalesPendingItem{}, 0, nil
+	}
+
+	var orders []model.Order
+	if err := query.NotDeleted(s.freshDB().Model(&model.Order{})).
+		Select("id", "pay_amount", "refunded_amount", "paid_at", "created_at").
+		Where("id IN ?", orderIDs).Find(&orders).Error; err != nil {
+		return nil, 0, err
+	}
+	var orderItems []model.OrderItem
+	if err := query.NotDeleted(s.freshDB().Model(&model.OrderItem{})).
+		Select("order_id", "product_id", "product_name", "quantity", "unit_price", "subtotal", "purchase_type", "activity_id").
+		Where("order_id IN ?", orderIDs).Find(&orderItems).Error; err != nil {
+		return nil, 0, err
+	}
+	bargainSet := map[uint64]struct{}{}
+	var sessions []model.BargainSession
+	if err := query.NotDeleted(s.freshDB().Model(&model.BargainSession{})).
+		Select("id", "order_id").Where("order_id IN ?", orderIDs).Find(&sessions).Error; err == nil {
+		for _, bs := range sessions {
+			if bs.OrderID != nil && *bs.OrderID > 0 {
+				bargainSet[*bs.OrderID] = struct{}{}
+			}
+		}
+	}
+
+	itemsByOrder := make(map[uint64][]model.OrderItem, len(orderIDs))
+	subtotalByOrder := make(map[uint64]float64, len(orderIDs))
+	for _, it := range orderItems {
+		itemsByOrder[it.OrderID] = append(itemsByOrder[it.OrderID], it)
+		sub := it.Subtotal
+		if sub <= 0 {
+			sub = it.UnitPrice * float64(it.Quantity)
+		}
+		subtotalByOrder[it.OrderID] += sub
+	}
+	sort.Slice(orders, func(i, j int) bool {
+		return refundByOrder[orders[i].ID].RefundedAt.After(refundByOrder[orders[j].ID].RefundedAt)
+	})
+
+	out := make([]SalesPendingItem, 0, len(orderItems))
+	var totalQty int64
+	for _, o := range orders {
+		rr := refundByOrder[o.ID]
+		refundAmt := rr.RefundAmt
+		if refundAmt <= 0 {
+			refundAmt = o.RefundedAmount
+		}
+		if o.PayAmount > 0 && refundAmt > o.PayAmount {
+			refundAmt = o.PayAmount
+		}
+		refundAmt = roundMoney(refundAmt)
+		list := itemsByOrder[o.ID]
+		if len(list) == 0 || refundAmt <= 0 {
+			continue
+		}
+		base := subtotalByOrder[o.ID]
+		_, isBargain := bargainSet[o.ID]
+		purchasedAt := o.CreatedAt
+		if o.PaidAt != nil {
+			purchasedAt = *o.PaidAt
+		}
+		allocated := 0.0
+		for i := range list {
+			it := list[i]
+			unit := it.UnitPrice
+			if it.Quantity > 0 && it.Subtotal > 0 {
+				unit = roundMoney(it.Subtotal / float64(it.Quantity))
+			}
+			share := refundAmt
+			if base > 0 {
+				if i == len(list)-1 {
+					// 末条吸收尾差，保证分摊合计等于实退金额
+					share = roundMoney(refundAmt - allocated)
+				} else {
+					sub := it.Subtotal
+					if sub <= 0 {
+						sub = unit * float64(it.Quantity)
+					}
+					share = roundMoney(sub / base * refundAmt)
+					allocated += share
+				}
+			}
+			ch, chText := ResolveSaleChannelEx(it.PurchaseType, it.ActivityID, isBargain)
+			out = append(out, SalesPendingItem{
+				Source:          "order",
+				ID:              o.ID,
+				ProductID:       it.ProductID,
+				ProductName:     it.ProductName,
+				Quantity:        it.Quantity,
+				UnitPrice:       unit,
+				Amount:          share,
+				PurchasedAt:     formatSalesTime(purchasedAt),
+				RefundedAt:      formatSalesTime(rr.RefundedAt),
+				StatusText:      "已退款",
+				PurchaseType:    it.PurchaseType,
+				ActivityID:      it.ActivityID,
+				SaleChannel:     ch,
+				SaleChannelText: chText,
+				IsBargain:       isBargain,
+			})
+			totalQty += int64(it.Quantity)
+		}
+	}
+	if len(out) > 500 {
+		out = out[:500]
+	}
+	return out, totalQty, nil
 }
 
 // sumCompletedQuantity 已履约商品件数（背包 usage.quantity + 外卖明细件数）。
