@@ -530,7 +530,7 @@ func (s *DashboardService) listRefundedSalesItems(filter SalesReportFilter) ([]S
 
 	var orders []model.Order
 	if err := query.NotDeleted(s.freshDB().Model(&model.Order{})).
-		Select("id", "merchant_id", "pay_amount", "refunded_amount", "paid_at", "created_at").
+		Select("id", "account_id", "merchant_id", "pay_amount", "refunded_amount", "paid_at", "created_at").
 		Where("id IN ?", orderIDs).Find(&orders).Error; err != nil {
 		return nil, 0, err
 	}
@@ -550,6 +550,20 @@ func (s *DashboardService) listRefundedSalesItems(filter SalesReportFilter) ([]S
 			}
 		}
 	}
+	// 商品过期时间：按（来源订单 + 商品）取背包待核销记录的 expire_at
+	expireByKey := map[string]*time.Time{}
+	var usages []model.UserInventoryUsage
+	if err := query.NotDeleted(s.freshDB().Model(&model.UserInventoryUsage{})).
+		Select("source_order_id", "product_id", "expire_at").
+		Where("source_order_id IN ?", orderIDs).Find(&usages).Error; err == nil {
+		for _, u := range usages {
+			if u.SourceOrderID != nil && u.ExpireAt != nil {
+				expireByKey[orderProductKey(*u.SourceOrderID, u.ProductID)] = u.ExpireAt
+			}
+		}
+	}
+	// 买家信息缓存（同一用户多单不重复查）
+	buyerCache := map[uint64][2]string{}
 
 	itemsByOrder := make(map[uint64][]model.OrderItem, len(orderIDs))
 	subtotalByOrder := make(map[uint64]float64, len(orderIDs))
@@ -588,6 +602,13 @@ func (s *DashboardService) listRefundedSalesItems(filter SalesReportFilter) ([]S
 			purchasedAt = *o.PaidAt
 		}
 		allocated := 0.0
+		nick, phone := "", ""
+		if brief, ok := buyerCache[o.AccountID]; ok {
+			nick, phone = brief[0], brief[1]
+		} else {
+			nick, phone = s.lookupAccountBrief(o.AccountID)
+			buyerCache[o.AccountID] = [2]string{nick, phone}
+		}
 		for i := range list {
 			it := list[i]
 			unit := it.UnitPrice
@@ -619,7 +640,10 @@ func (s *DashboardService) listRefundedSalesItems(filter SalesReportFilter) ([]S
 				Amount:          share,
 				PurchasedAt:     formatSalesTime(purchasedAt),
 				RefundedAt:      formatSalesTime(rr.RefundedAt),
+				ExpireAt:        formatSalesTimePtr(expireByKey[orderProductKey(o.ID, it.ProductID)]),
 				StatusText:      "已退款",
+				UserNickname:    nick,
+				UserPhone:       phone,
 				PurchaseType:    it.PurchaseType,
 				ActivityID:      it.ActivityID,
 				SaleChannel:     ch,
