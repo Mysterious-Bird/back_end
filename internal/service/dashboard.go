@@ -661,16 +661,16 @@ func (s *DashboardService) listRefundedSalesItems(filter SalesReportFilter) ([]S
 	return out, totalQty, nil
 }
 
-// sumCompletedQuantity 已履约商品件数（背包 usage.quantity + 外卖明细件数）。
+// sumCompletedQuantity 已履约商品件数（背包已核销件数 + 外卖明细件数）。
 func (s *DashboardService) sumCompletedQuantity(filter SalesReportFilter) (int64, error) {
 	var bagQty int64
 	bq := query.NotDeleted(s.freshDB().Model(&model.UserInventoryUsage{})).
-		Where("status = ?", model.InventoryUsageCompleted)
+		Where("verified_quantity > 0")
 	if filter.MerchantID != nil {
 		bq = bq.Where("usage_merchant_id = ?", *filter.MerchantID)
 	}
 	bq = applyCompletedTimeRange(bq, "updated_at", filter.StartDate, filter.EndDate)
-	if err := bq.Select("COALESCE(SUM(quantity),0)").Scan(&bagQty).Error; err != nil {
+	if err := bq.Select("COALESCE(SUM(verified_quantity),0)").Scan(&bagQty).Error; err != nil {
 		return 0, err
 	}
 
@@ -702,7 +702,7 @@ func (s *DashboardService) sumPendingQuantity(filter SalesReportFilter) (int64, 
 		bq = bq.Where("usage_merchant_id = ?", *filter.MerchantID)
 	}
 	bq = applyCompletedTimeRange(bq, "created_at", filter.StartDate, filter.EndDate)
-	if err := bq.Select("COALESCE(SUM(quantity),0)").Scan(&bagQty).Error; err != nil {
+	if err := bq.Select("COALESCE(SUM(GREATEST(quantity - verified_quantity, 0)),0)").Scan(&bagQty).Error; err != nil {
 		return 0, err
 	}
 
@@ -738,12 +738,12 @@ func (s *DashboardService) sumPendingQuantity(filter SalesReportFilter) (int64, 
 	return bagQty + takeoutQty + invQty, nil
 }
 
-// effectiveVerificationQuery 仅统计仍对应「已完成」使用记录的核销（回退后作废的不计入）。
+// effectiveVerificationQuery 仅统计仍有效（未被回退作废）的核销；部分核销未完成的使用记录也计入。
 func (s *DashboardService) effectiveVerificationQuery(merchantID *uint64) *gorm.DB {
 	q := s.freshDB().Table("verification_record AS vr").
 		Joins("JOIN verification_code vc ON vc.id = vr.verification_code_id AND vc.is_deleted = ?", model.NotDeleted).
-		Joins("JOIN user_inventory_usage u ON u.id = vc.inventory_usage_id AND u.is_deleted = ? AND u.status = ?",
-			model.NotDeleted, model.InventoryUsageCompleted).
+		Joins("JOIN user_inventory_usage u ON u.id = vc.inventory_usage_id AND u.is_deleted = ?",
+			model.NotDeleted).
 		Where("vr.is_deleted = ?", model.NotDeleted)
 	if merchantID != nil {
 		q = q.Where("vr.merchant_id = ?", *merchantID)
@@ -818,7 +818,7 @@ func (s *DashboardService) listCompletedSalesItems(filter SalesReportFilter) ([]
 
 func (s *DashboardService) listCompletedBagSalesItems(filter SalesReportFilter) ([]SalesCompletedItem, int64, float64, error) {
 	q := query.NotDeleted(s.freshDB().Model(&model.UserInventoryUsage{})).
-		Where("status = ?", model.InventoryUsageCompleted)
+		Where("verified_quantity > 0")
 	if filter.MerchantID != nil {
 		q = q.Where("usage_merchant_id = ?", *filter.MerchantID)
 	}
@@ -877,7 +877,7 @@ func (s *DashboardService) listCompletedBagSalesItems(filter SalesReportFilter) 
 				actID = m.ActivityID
 			}
 		}
-		amount := roundMoney(unitPrice * float64(u.Quantity))
+		amount := roundMoney(unitPrice * float64(u.VerifiedQuantity))
 		sum += amount
 		fulfillType := "pickup"
 		fulfillText := "到店自提·已核销"
@@ -906,7 +906,7 @@ func (s *DashboardService) listCompletedBagSalesItems(filter SalesReportFilter) 
 		verifiedAt := completedAt
 		items = append(items, SalesCompletedItem{
 			UsageID: u.ID, ProductID: u.ProductID, ProductName: name,
-			Quantity: u.Quantity, UnitPrice: unitPrice, Amount: amount,
+			Quantity: u.VerifiedQuantity, UnitPrice: unitPrice, Amount: amount,
 			FulfillType: fulfillType, FulfillText: fulfillText,
 			CompletedAt: formatSalesTime(completedAt),
 			PurchasedAt: formatSalesTime(purchasedAt),
@@ -1071,7 +1071,12 @@ func (s *DashboardService) listPendingBagSalesItems(filter SalesReportFilter) ([
 				actID = m.ActivityID
 			}
 		}
-		amount := roundMoney(unitPrice * float64(u.Quantity))
+		qty := u.Quantity
+		if u.VerifiedQuantity >= qty {
+			continue
+		}
+		qty -= u.VerifiedQuantity
+		amount := roundMoney(unitPrice * float64(qty))
 		sum += amount
 		nick, phone := s.lookupAccountBrief(u.AccountID)
 		ch, chText := ResolveSaleChannelEx(pt, actID, isBargain)
@@ -1083,7 +1088,7 @@ func (s *DashboardService) listPendingBagSalesItems(filter SalesReportFilter) ([
 		}
 		items = append(items, SalesPendingItem{
 			Source: "usage", ID: u.ID, ProductID: u.ProductID, ProductName: name,
-			Quantity: u.Quantity, UnitPrice: unitPrice, Amount: amount,
+			Quantity: qty, UnitPrice: unitPrice, Amount: amount,
 			PurchasedAt: formatSalesTime(purchasedAt),
 			ExpireAt:    formatSalesTimePtr(u.ExpireAt),
 			StatusText:  model.InventoryUsageStatusText(u.Status),
@@ -1517,9 +1522,9 @@ func (s *DashboardService) orderTrend(merchantID *uint64, days int) ([]DailyStat
 	), p.price, 0)`
 	bagQ := s.freshDB().Table("user_inventory_usage AS u").
 		Joins("LEFT JOIN product p ON p.id = u.product_id AND p.is_deleted = 0").
-		Where("u.is_deleted = ? AND u.status = ? AND u.updated_at >= ?",
-			model.NotDeleted, model.InventoryUsageCompleted, start).
-		Select(bagDay + " AS day, COUNT(*) AS order_count, COALESCE(SUM((" + bagUnit + ") * u.quantity), 0) AS sales_amount")
+		Where("u.is_deleted = ? AND u.verified_quantity > 0 AND u.updated_at >= ?",
+			model.NotDeleted, start).
+		Select(bagDay + " AS day, COUNT(*) AS order_count, COALESCE(SUM((" + bagUnit + ") * u.verified_quantity), 0) AS sales_amount")
 	if merchantID != nil {
 		bagQ = bagQ.Where("u.usage_merchant_id = ?", *merchantID)
 	}
@@ -1586,8 +1591,8 @@ func (s *DashboardService) topProducts(merchantID *uint64, limit int) ([]Product
 	counts := map[uint64]uint32{}
 
 	bagQ := s.freshDB().Table("user_inventory_usage AS u").
-		Select("u.product_id, COALESCE(SUM(u.quantity), 0) AS sales_count").
-		Where("u.is_deleted = ? AND u.status = ?", model.NotDeleted, model.InventoryUsageCompleted)
+		Select("u.product_id, COALESCE(SUM(u.verified_quantity), 0) AS sales_count").
+		Where("u.is_deleted = ? AND u.verified_quantity > 0", model.NotDeleted)
 	if merchantID != nil {
 		bagQ = bagQ.Where("u.usage_merchant_id = ?", *merchantID)
 	}

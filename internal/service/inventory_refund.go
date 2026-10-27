@@ -489,8 +489,11 @@ func (s *OrderService) refundPendingVerifyUsage(accountID, usageID uint64, opts 
 		}).Error; err != nil {
 			return err
 		}
-		if err := InvalidateVerificationRecordsForUsage(tx, usage.ID); err != nil {
-			return err
+		// 部分核销过：保留已核销记录，只作废未核销部分（无核销记录时才整体作废）
+		if usage.VerifiedQuantity == 0 {
+			if err := InvalidateVerificationRecordsForUsage(tx, usage.ID); err != nil {
+				return err
+			}
 		}
 
 		var totalRefund float64
@@ -606,6 +609,26 @@ func allocatePendingVerifyRefund(tx *gorm.DB, usage *model.UserInventoryUsage, p
 
 	merged := map[uint64]uint32{}
 	orderSeq := make([]uint64, 0)
+	// 部分核销：已核销件数按 FIFO 视为已消耗，仅退未核销部分
+	if usage.VerifiedQuantity > 0 {
+		skip := usage.VerifiedQuantity
+		trimmed := make([]portion, 0, len(portions))
+		for _, p := range portions {
+			if skip >= p.Qty {
+				skip -= p.Qty
+				continue
+			}
+			if skip > 0 {
+				p.Qty -= skip
+				skip = 0
+			}
+			trimmed = append(trimmed, p)
+		}
+		portions = trimmed
+	}
+	if len(portions) == 0 {
+		return nil, fmt.Errorf("%w: 商品已全部核销，无可退款数量", ErrInventoryRefundInvalid)
+	}
 	for _, p := range portions {
 		if _, ok := merged[p.OrderID]; !ok {
 			orderSeq = append(orderSeq, p.OrderID)

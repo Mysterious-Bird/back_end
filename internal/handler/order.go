@@ -377,6 +377,7 @@ type ReviewOrderRequest struct {
 
 type VerifyRequest struct {
 	Code             string                             `json:"code" binding:"required" example:"V1a2b3c4d"`
+	Quantity         uint32                             `json:"quantity"` // 本次核销件数，0 或空 = 全部剩余
 	PackageUnits     []service.PackageUnitInput         `json:"package_units"`
 	OptionSelections []service.OptionSelectionUnitInput `json:"option_selections"`
 }
@@ -560,7 +561,7 @@ func (h *MerchantOrderHandler) PreviewVerify(c *gin.Context) {
 
 // Verify godoc
 // @Summary      确认核销
-// @Description  核销码一次性使用，整单/整次使用记录完成，无需传数量
+// @Description  支持部分核销：quantity 为本次核销件数，0 或空表示全部剩余；全部核销后核销码作废。套餐商品须一次核销全部剩余
 // @Tags         商家端-核销
 // @Accept       json
 // @Produce      json
@@ -583,7 +584,7 @@ func (h *MerchantOrderHandler) Verify(c *gin.Context) {
 		response.BadRequest(c, "参数无效")
 		return
 	}
-	record, err := h.VerifySvc.Verify(*scope, operatorID, req.Code, req.PackageUnits, req.OptionSelections)
+	record, err := h.VerifySvc.Verify(*scope, operatorID, req.Code, req.Quantity, req.PackageUnits, req.OptionSelections)
 	if err != nil {
 		handleVerifyError(c, err)
 		return
@@ -601,6 +602,10 @@ func handleVerifyError(c *gin.Context, err error) {
 		response.BadRequest(c, "核销码已过期")
 	case errors.Is(err, service.ErrVerifyMerchantMismatch):
 		response.Fail(c, 403, 403, "非本店商品，无法核销")
+	case errors.Is(err, service.ErrVerifyQuantityInvalid):
+		response.BadRequest(c, err.Error())
+	case errors.Is(err, service.ErrVerifyPartialPackage):
+		response.BadRequest(c, "套餐商品需一次性核销全部剩余数量")
 	case errors.Is(err, service.ErrVerifyRiderRequired):
 		response.BadRequest(c, "请等待骑手接单后再核销")
 	case errors.Is(err, service.ErrPackageSelectionRequired):

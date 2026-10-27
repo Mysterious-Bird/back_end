@@ -29,6 +29,7 @@ type VerificationRecord struct {
 	OrderID            uint64    `gorm:"not null" json:"order_id"`
 	MerchantID         uint64    `gorm:"not null" json:"merchant_id"`
 	OperatorID         uint64    `gorm:"not null" json:"operator_id"`
+	Quantity           uint32    `gorm:"not null;default:0" json:"quantity"` // 本次核销件数
 	VerifiedAt         time.Time `json:"verified_at"`
 	SoftDelete
 }

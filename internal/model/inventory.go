@@ -58,6 +58,7 @@ type UserInventoryUsage struct {
 	UsageMerchantID uint64           `gorm:"column:usage_merchant_id;not null;default:0" json:"usage_merchant_id"`
 	SourceOrderID   *uint64          `gorm:"column:source_order_id" json:"source_order_id,omitempty"`
 	Quantity        uint32           `gorm:"not null" json:"quantity"`
+	VerifiedQuantity uint32          `gorm:"not null;default:0" json:"verified_quantity"` // 已核销件数（支持部分核销）
 	DeliveryType    uint8            `gorm:"not null" json:"delivery_type"`
 	AddressSnapshot *AddressSnapshot `gorm:"type:json" json:"address_snapshot,omitempty"`
 	Status          uint8            `gorm:"not null;default:1" json:"status"`

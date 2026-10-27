@@ -535,6 +535,10 @@ func (s *InventoryService) finalizeCancelUsage(accountID uint64, usage *model.Us
 		if err := tx.Model(usage).Updates(updates).Error; err != nil {
 			return err
 		}
+		// 部分核销过：保留已核销记录
+		if usage.VerifiedQuantity > 0 {
+			return nil
+		}
 		return InvalidateVerificationRecordsForUsage(tx, usage.ID)
 	})
 	if err != nil {
@@ -702,7 +706,13 @@ func (s *InventoryService) CompleteUsageByVerify(tx *gorm.DB, usageID uint64, pa
 		return err
 	}
 	updates := map[string]interface{}{
-		"status": model.InventoryUsageCompleted,
+		"status":            model.InventoryUsageCompleted,
+		"verified_quantity": usage.Quantity,
+	}
+	// 部分核销后再核销剩余：本次的套餐/规格选配只针对剩余件数
+	verifyQty := usage.Quantity
+	if usage.VerifiedQuantity > 0 && usage.VerifiedQuantity < usage.Quantity {
+		verifyQty = usage.Quantity - usage.VerifiedQuantity
 	}
 	var resolvedPackageUnits [][]PackageSelectionInput
 	if usage.Product != nil && usage.Product.ItemType == model.ProductItemTypePackage {
@@ -715,12 +725,12 @@ func (s *InventoryService) CompleteUsageByVerify(tx *gorm.DB, usageID uint64, pa
 				return ErrPackageSelectionRequired
 			}
 		} else {
-			units, err := normalizePackageUnits(packageUnits, nil, usage.Quantity)
+			units, err := normalizePackageUnits(packageUnits, nil, verifyQty)
 			if err != nil {
 				return err
 			}
 			resolvedPackageUnits = units
-			snap, err := applyPackageUnitsInTx(tx, usage.ProductID, usage.Quantity, units)
+			snap, err := applyPackageUnitsInTx(tx, usage.ProductID, verifyQty, units)
 			if err != nil {
 				return err
 			}
@@ -737,7 +747,7 @@ func (s *InventoryService) CompleteUsageByVerify(tx *gorm.DB, usageID uint64, pa
 		// 跑腿下单时已选配，核销不再覆盖
 	} else {
 		optSnap, optStatus, err := applyOptionSelectionsForVerify(
-			tx, usage.Product, usage.ProductID, usage.Quantity, resolvedPackageUnits, optionSelections,
+			tx, usage.Product, usage.ProductID, verifyQty, resolvedPackageUnits, optionSelections,
 		)
 		if err != nil {
 			return err

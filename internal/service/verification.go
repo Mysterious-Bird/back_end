@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -18,6 +19,8 @@ var (
 	ErrVerifyCodeExpired       = errors.New("verification code expired")
 	ErrVerifyMerchantMismatch  = errors.New("verification merchant mismatch")
 	ErrVerifyRiderRequired     = errors.New("verification rider required")
+	ErrVerifyQuantityInvalid   = errors.New("verify quantity invalid")
+	ErrVerifyPartialPackage    = errors.New("package product requires full verification")
 )
 
 type VerificationService struct {
@@ -56,7 +59,7 @@ func InvalidateVerificationRecordsForUsage(tx *gorm.DB, usageID uint64) error {
 		Update("is_deleted", model.Deleted).Error
 }
 
-// VerifyPreviewView 扫码后展示的核销信息（数量固定，不可选）。
+// VerifyPreviewView 扫码后展示的核销信息（数量默认全部，可部分核销）。
 type VerifyPreviewView struct {
 	Code        string  `json:"code"`
 	ProductID   uint64  `json:"product_id"`
@@ -64,6 +67,8 @@ type VerifyPreviewView struct {
 	CoverURL    string  `json:"cover_url,omitempty"`
 	Spec        string  `json:"spec,omitempty"`
 	Quantity    uint32  `json:"quantity"`
+	VerifiedQuantity  uint32 `json:"verified_quantity"`
+	RemainingQuantity uint32 `json:"remaining_quantity"`
 	ItemType    uint8   `json:"item_type"`
 	IsPackage   bool    `json:"is_package"`
 	UsageID     *uint64 `json:"usage_id,omitempty"`
@@ -77,6 +82,7 @@ type verifyResolveResult struct {
 	product    model.Product
 	spec       string
 	quantity   uint32
+	verifiedQuantity uint32
 	usageID    *uint64
 	orderID    *uint64
 	orderNo    string
@@ -94,9 +100,10 @@ func (s *VerificationService) LookupByCode(merchantID uint64, code string) (*Ver
 	return toVerifyPreviewView(resolved), nil
 }
 
-// Verify 一次性核销：整单/整次使用记录完成，不支持部分数量。
-// 套餐须传 packageUnits（份数=quantity），选配与核销在同一事务完成；未选配则不核销。
-func (s *VerificationService) Verify(merchantID, operatorID uint64, code string, packageUnits []PackageUnitInput, optionSelections []OptionSelectionUnitInput) (*model.VerificationRecord, error) {
+// Verify 核销：quantity 为本次核销件数（0 表示核销全部剩余）。
+// 支持部分核销：部分核销后使用记录保持待核销、核销码继续可用；全部核销后置为已完成。
+// 套餐商品涉及选配与组件库存，须一次核销全部剩余数量。
+func (s *VerificationService) Verify(merchantID, operatorID uint64, code string, quantity uint32, packageUnits []PackageUnitInput, optionSelections []OptionSelectionUnitInput) (*model.VerificationRecord, error) {
 	preview, err := s.resolveVerifyCode(code, false)
 	if err != nil {
 		return nil, err
@@ -116,48 +123,97 @@ func (s *VerificationService) Verify(merchantID, operatorID uint64, code string,
 		vc = resolved.vc
 
 		now := time.Now()
-		result := tx.Model(&vc).Where("status = ?", model.VerificationCodeUnused).
-			Updates(map[string]interface{}{"status": model.VerificationCodeUsed, "used_at": now})
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			return ErrVerifyCodeUsed
-		}
 
 		orderID := uint64(0)
 		if resolved.usageID != nil {
 			var usage model.UserInventoryUsage
-			if err := query.NotDeleted(tx).First(&usage, *resolved.usageID).Error; err != nil {
+			if err := query.NotDeleted(tx.Clauses(clause.Locking{Strength: "UPDATE"})).
+				First(&usage, *resolved.usageID).Error; err != nil {
 				return ErrVerifyCodeNotFound
 			}
 			if usage.ProductID != resolved.product.ID {
 				return ErrVerifyMerchantMismatch
+			}
+			remaining := uint32(0)
+			if usage.Quantity > usage.VerifiedQuantity {
+				remaining = usage.Quantity - usage.VerifiedQuantity
+			}
+			if remaining == 0 {
+				return ErrVerifyCodeUsed
+			}
+			qty := quantity
+			if qty == 0 {
+				qty = remaining
+			}
+			if qty > remaining {
+				return fmt.Errorf("%w: 本次核销数量须在 1~%d 之间", ErrVerifyQuantityInvalid, remaining)
+			}
+			full := qty == remaining
+			if resolved.product.ItemType == model.ProductItemTypePackage && !full {
+				return ErrVerifyPartialPackage
+			}
+			if full {
+				result := tx.Model(&vc).Where("status = ?", model.VerificationCodeUnused).
+					Updates(map[string]interface{}{"status": model.VerificationCodeUsed, "used_at": now})
+				if result.Error != nil {
+					return result.Error
+				}
+				if result.RowsAffected == 0 {
+					return ErrVerifyCodeUsed
+				}
 			}
 			if usage.SourceOrderID != nil {
 				orderID = *usage.SourceOrderID
 			}
 			record = model.VerificationRecord{
 				VerificationCodeID: vc.ID, OrderID: orderID,
-				MerchantID: merchantID, OperatorID: operatorID, VerifiedAt: now,
+				MerchantID: merchantID, OperatorID: operatorID, Quantity: qty, VerifiedAt: now,
 			}
 			if err := tx.Create(&record).Error; err != nil {
 				return err
 			}
-			if err := query.NotDeleted(tx.Model(&model.UserInventoryUsage{})).
-				Where("id = ?", usage.ID).
-				Update("usage_merchant_id", merchantID).Error; err != nil {
-				return err
-			}
-			if s.InventorySvc != nil {
-				if err := s.InventorySvc.CompleteUsageByVerify(tx, usage.ID, packageUnits, optionSelections); err != nil {
+			if full {
+				if s.InventorySvc != nil {
+					if err := s.InventorySvc.CompleteUsageByVerify(tx, usage.ID, packageUnits, optionSelections); err != nil {
+						return err
+					}
+				} else if err := tx.Model(&usage).Updates(map[string]interface{}{
+					"status":            model.InventoryUsageCompleted,
+					"usage_merchant_id": merchantID,
+					"verified_quantity": usage.Quantity,
+				}).Error; err != nil {
 					return err
 				}
-			} else if err := tx.Model(&usage).Updates(map[string]interface{}{
-				"status":            model.InventoryUsageCompleted,
-				"usage_merchant_id": merchantID,
-			}).Error; err != nil {
-				return err
+			} else {
+				updates := map[string]interface{}{
+					"verified_quantity": usage.VerifiedQuantity + qty,
+					"usage_merchant_id": merchantID,
+				}
+				// 规格选配按本次核销数量校验并记录（快照保留最近一次）
+				optSnap, optStatus, optErr := applyOptionSelectionsForVerify(
+					tx, &resolved.product, usage.ProductID, qty, nil, optionSelections,
+				)
+				if optErr != nil {
+					return optErr
+				}
+				if optStatus != model.OptionSelectNone {
+					raw, mErr := json.Marshal(optSnap)
+					if mErr != nil {
+						return mErr
+					}
+					updates["option_selections"] = json.RawMessage(raw)
+					updates["option_select_status"] = optStatus
+				}
+				// 乐观校验已核销数，避免并发重复核销
+				res := query.NotDeleted(tx.Model(&model.UserInventoryUsage{})).
+					Where("id = ? AND verified_quantity = ?", usage.ID, usage.VerifiedQuantity).
+					Updates(updates)
+				if res.Error != nil {
+					return res.Error
+				}
+				if res.RowsAffected == 0 {
+					return ErrVerifyCodeUsed
+				}
 			}
 			// 核销写入订单履约时间线
 			AppendFulfillmentEventInTx(tx, FulfillmentEventInput{
@@ -165,7 +221,7 @@ func (s *VerificationService) Verify(merchantID, operatorID uint64, code string,
 				SubjectID:   orderID,
 				EventCode:   model.EventVerified,
 				Title:       "已核销",
-				Detail:      map[string]interface{}{"code": vc.Code},
+				Detail:      map[string]interface{}{"code": vc.Code, "quantity": qty},
 			})
 			return nil
 		}
@@ -177,9 +233,21 @@ func (s *VerificationService) Verify(merchantID, operatorID uint64, code string,
 		if err := query.NotDeleted(tx).First(&order, *resolved.orderID).Error; err != nil {
 			return ErrVerifyMerchantMismatch
 		}
+		// 订单直购核销码：一次性整单核销，不支持部分数量
+		if quantity != 0 && resolved.quantity != 0 && quantity != resolved.quantity {
+			return fmt.Errorf("%w: 该核销码不支持部分核销", ErrVerifyQuantityInvalid)
+		}
+		result := tx.Model(&vc).Where("status = ?", model.VerificationCodeUnused).
+			Updates(map[string]interface{}{"status": model.VerificationCodeUsed, "used_at": now})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrVerifyCodeUsed
+		}
 		record = model.VerificationRecord{
 			VerificationCodeID: vc.ID, OrderID: order.ID,
-			MerchantID: merchantID, OperatorID: operatorID, VerifiedAt: now,
+			MerchantID: merchantID, OperatorID: operatorID, Quantity: resolved.quantity, VerifiedAt: now,
 		}
 		if err := tx.Create(&record).Error; err != nil {
 			return err
@@ -193,7 +261,7 @@ func (s *VerificationService) Verify(merchantID, operatorID uint64, code string,
 			SubjectID:   order.ID,
 			EventCode:   model.EventVerified,
 			Title:       "已核销",
-			Detail:      map[string]interface{}{"code": vc.Code},
+			Detail:      map[string]interface{}{"code": vc.Code, "quantity": resolved.quantity},
 		})
 		return nil
 	})
@@ -202,6 +270,9 @@ func (s *VerificationService) Verify(merchantID, operatorID uint64, code string,
 			return nil, ErrVerifyMerchantMismatch
 		}
 		if errors.Is(err, ErrVerifyCodeNotFound) || errors.Is(err, ErrVerifyCodeUsed) || errors.Is(err, ErrVerifyCodeExpired) || errors.Is(err, ErrVerifyRiderRequired) {
+			return nil, err
+		}
+		if errors.Is(err, ErrVerifyQuantityInvalid) || errors.Is(err, ErrVerifyPartialPackage) {
 			return nil, err
 		}
 		if errors.Is(err, ErrPackageSelectionRequired) || errors.Is(err, ErrOptionRequired) || errors.Is(err, ErrOptionInvalid) || errors.Is(err, ErrInsufficientStock) || errors.Is(err, ErrInvalidProductArg) {
@@ -308,7 +379,8 @@ func (s *VerificationService) buildVerifyResolveResult(db *gorm.DB, vc *model.Ve
 		}
 		return &verifyResolveResult{
 			vc: *vc, merchantID: product.MerchantID, product: product,
-			spec: spec, quantity: usage.Quantity, usageID: vc.InventoryUsageID,
+			spec: spec, quantity: usage.Quantity, verifiedQuantity: usage.VerifiedQuantity,
+			usageID: vc.InventoryUsageID,
 		}, nil
 	}
 
@@ -350,6 +422,10 @@ func (s *VerificationService) buildVerifyResolveResult(db *gorm.DB, vc *model.Ve
 }
 
 func toVerifyPreviewView(resolved *verifyResolveResult) *VerifyPreviewView {
+	remaining := uint32(0)
+	if resolved.quantity > resolved.verifiedQuantity {
+		remaining = resolved.quantity - resolved.verifiedQuantity
+	}
 	return &VerifyPreviewView{
 		Code:        resolved.vc.Code,
 		ProductID:   resolved.product.ID,
@@ -357,6 +433,8 @@ func toVerifyPreviewView(resolved *verifyResolveResult) *VerifyPreviewView {
 		CoverURL:    resolved.product.CoverURL,
 		Spec:        resolved.spec,
 		Quantity:    resolved.quantity,
+		VerifiedQuantity:  resolved.verifiedQuantity,
+		RemainingQuantity: remaining,
 		ItemType:    resolved.product.ItemType,
 		IsPackage:   resolved.product.ItemType == model.ProductItemTypePackage,
 		UsageID:     resolved.usageID,
@@ -399,11 +477,11 @@ type VerificationListFilter struct {
 
 func (s *VerificationService) effectiveVerificationBase() *gorm.DB {
 	// 必须限定 verification_record.is_deleted：JOIN 多表后裸 is_deleted 会触发 MySQL Error 1052 ambiguous
+	// 不再限定 usage.status=已完成：部分核销后 usage 仍为待核销，但核销记录需展示
 	return s.DB.Session(&gorm.Session{NewDB: true}).
 		Model(&model.VerificationRecord{}).
 		Joins("JOIN verification_code vc ON vc.id = verification_record.verification_code_id AND vc.is_deleted = ?", model.NotDeleted).
-		Joins("JOIN user_inventory_usage u ON u.id = vc.inventory_usage_id AND u.is_deleted = ? AND u.status = ?",
-			model.NotDeleted, model.InventoryUsageCompleted).
+		Joins("JOIN user_inventory_usage u ON u.id = vc.inventory_usage_id AND u.is_deleted = ?", model.NotDeleted).
 		Where("verification_record.is_deleted = ?", model.NotDeleted)
 }
 
@@ -484,8 +562,12 @@ func (s *VerificationService) buildVerificationRecordView(rec *model.Verificatio
 		OperatorID: rec.OperatorID,
 		VerifiedAt: rec.VerifiedAt,
 		VerifyType: "merchant",
-		Quantity:   1,
-		UseCount:   1,
+		Quantity:   rec.Quantity,
+		UseCount:   rec.Quantity,
+	}
+	if view.Quantity == 0 {
+		view.Quantity = 1
+		view.UseCount = 1
 	}
 	var vc model.VerificationCode
 	if err := query.NotDeleted(s.DB).First(&vc, rec.VerificationCodeID).Error; err == nil {
@@ -495,13 +577,7 @@ func (s *VerificationService) buildVerificationRecordView(rec *model.Verificatio
 			var usage model.UserInventoryUsage
 			if err := query.NotDeleted(s.DB).First(&usage, *vc.InventoryUsageID).Error; err == nil {
 				view.ProductID = usage.ProductID
-				view.Quantity = usage.Quantity
-				view.UseCount = usage.Quantity
 				view.AccountID = usage.AccountID
-				if usage.Quantity == 0 {
-					view.Quantity = 1
-					view.UseCount = 1
-				}
 				var product model.Product
 				if err := query.NotDeleted(s.DB).Select("id", "name", "price").First(&product, usage.ProductID).Error; err == nil {
 					view.ProductName = product.Name

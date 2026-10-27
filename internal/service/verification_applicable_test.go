@@ -24,6 +24,8 @@ func setupVerificationApplicableTestDB(t *testing.T) *gorm.DB {
 		&model.UserInventoryUsage{},
 		&model.VerificationCode{},
 		&model.VerificationRecord{},
+		&model.ProductOptionGroup{},
+		&model.ProductOptionItem{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -111,7 +113,7 @@ func TestVerifyApplicableMerchantSetsUsageMerchant(t *testing.T) {
 	fx := seedVerificationApplicableFixture(t, db)
 	svc := newVerificationSvc(db)
 
-	record, err := svc.Verify(2, 200, fx.code, nil, nil)
+	record, err := svc.Verify(2, 200, fx.code, 0, nil, nil)
 	if err != nil {
 		t.Fatalf("verify as applicable merchant 2: %v", err)
 	}
@@ -136,7 +138,7 @@ func TestVerifyNonApplicableMerchantFails(t *testing.T) {
 	fx := seedVerificationApplicableFixture(t, db)
 	svc := newVerificationSvc(db)
 
-	_, err := svc.Verify(3, 300, fx.code, nil, nil)
+	_, err := svc.Verify(3, 300, fx.code, 0, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for non-applicable merchant 3")
 	}
