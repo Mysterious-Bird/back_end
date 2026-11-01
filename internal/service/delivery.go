@@ -143,10 +143,10 @@ func (s *DeliveryService) ListForRider(riderID uint64, scope string, page, pageS
 			model.DeliveryPendingAccept,
 		)
 	case "active":
-		// 已送达但用户未确认收货前仍算配送中，用户确认后才进入配送记录
+		// 已送达但用户未确认收货前仍算配送中；异常（含用户申诉）也留在配送中并标异常
 		q = q.Where("rider_id = ? AND status IN ?", riderID, []int{
 			int(model.DeliveryAccepted), int(model.DeliveryPicking), int(model.DeliveryDelivering),
-			int(model.DeliveryDelivered),
+			int(model.DeliveryDelivered), int(model.DeliveryException),
 		})
 	case "history":
 		q = q.Where("rider_id = ? AND status = ?", riderID, model.DeliveryConfirmed)

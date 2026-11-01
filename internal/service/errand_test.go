@@ -414,6 +414,67 @@ func TestErrandAdminResumeAfterRiderException(t *testing.T) {
 	}
 }
 
+func TestRiderActiveKeepsExceptionOrder(t *testing.T) {
+	db, svc, dsvc, riderID := newErrandFixture(t)
+	const accountID = 106
+
+	view, err := svc.Create(accountID, ErrandCreateInput{
+		PickupAddress: "取货路", ContactName: "吴九", ContactPhone: "13700000000",
+		Detail: "收货路", GoodsDesc: "水果",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.CreatePrepay(accountID, view.ID); err != nil {
+		t.Fatalf("prepay: %v", err)
+	}
+	view, err = svc.Get(accountID, view.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	deliveryID := *view.DeliveryOrderID
+	if _, err := dsvc.Accept(riderID, deliveryID); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if _, err := svc.RiderPickup(riderID, view.ID, 8.5, []string{"receipt.jpg"}); err != nil {
+		t.Fatalf("pickup: %v", err)
+	}
+	if _, err := svc.RiderComplete(riderID, view.ID, model.ErrandPayModeCash); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	// 用户在待确认收货阶段申诉：订单不应从骑手「配送中」消失
+	if _, err := svc.Appeal(accountID, view.ID, "商品不符"); err != nil {
+		t.Fatalf("user appeal: %v", err)
+	}
+	views, total, err := dsvc.ListForRider(riderID, "active", 1, 10)
+	if err != nil {
+		t.Fatalf("list rider active: %v", err)
+	}
+	if total != 1 || len(views) != 1 || views[0].Status != model.DeliveryException {
+		t.Fatalf("exception order should stay in active, total=%d status=%v", total, len(views))
+	}
+
+	// 管理端恢复配送后回到待确认，骑手端不再异常
+	if _, err := dsvc.AdminResolveResume(deliveryID, "协商一致"); err != nil {
+		t.Fatalf("admin resume: %v", err)
+	}
+	var d model.DeliveryOrder
+	if err := db.First(&d, deliveryID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if d.Status != model.DeliveryDelivered {
+		t.Fatalf("delivery status after resume want delivered(4), got %d", d.Status)
+	}
+	var eo model.ErrandOrder
+	if err := db.First(&eo, view.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if eo.Status != model.ErrandStatusPendingConfirm {
+		t.Fatalf("errand status after resume want pending confirm(4), got %d", eo.Status)
+	}
+}
+
 func TestErrandFeeByItemCount(t *testing.T) {
 	_, svc, _, _ := newErrandFixture(t)
 	cases := []struct {
