@@ -1539,6 +1539,19 @@ func resumeTargetStatus(d *model.DeliveryOrder) uint8 {
 	return model.DeliveryAccepted
 }
 
+// errandStatusForDelivery 将配送进度映射回跑腿单状态。
+func errandStatusForDelivery(deliveryStatus uint8) (uint8, bool) {
+	switch deliveryStatus {
+	case model.DeliveryAccepted:
+		return model.ErrandStatusAccepted, true
+	case model.DeliveryDelivering:
+		return model.ErrandStatusDelivering, true
+	case model.DeliveryDelivered:
+		return model.ErrandStatusPendingConfirm, true
+	}
+	return 0, false
+}
+
 func (s *DeliveryService) deliveryPaymentProvider() payment.Provider {
 	if s.DeliveryFeePaySvc != nil {
 		return s.DeliveryFeePaySvc.paymentProvider()
@@ -1671,10 +1684,22 @@ func (s *DeliveryService) AdminResolveResume(deliveryID uint64, remark string) (
 			return err
 		}
 		newReason := appendAdminRemark(d.ExceptionReason, remark)
-		return tx.Model(d).Updates(map[string]interface{}{
-			"status":           resumeTargetStatus(d),
+		newStatus := resumeTargetStatus(d)
+		if err := tx.Model(d).Updates(map[string]interface{}{
+			"status":           newStatus,
 			"exception_reason": newReason,
-		}).Error
+		}).Error; err != nil {
+			return err
+		}
+		// 跑腿单同步恢复业务状态，否则骑手端仍按异常处理、无法继续配送
+		if d.ErrandOrderID != nil {
+			if errStatus, ok := errandStatusForDelivery(newStatus); ok {
+				_ = tx.Model(&model.ErrandOrder{}).
+					Where("id = ? AND status = ?", *d.ErrandOrderID, model.ErrandStatusException).
+					Update("status", errStatus).Error
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -1704,6 +1729,12 @@ func (s *DeliveryService) AdminResolveReassign(deliveryID uint64, remark string)
 			"exception_reason": appendAdminRemark(d.ExceptionReason, remark),
 		}).Error; err != nil {
 			return err
+		}
+		// 跑腿单回到待接单，否则新骑手接单时状态校验不通过
+		if d.ErrandOrderID != nil {
+			_ = tx.Model(&model.ErrandOrder{}).
+				Where("id = ? AND status = ?", *d.ErrandOrderID, model.ErrandStatusException).
+				Update("status", model.ErrandStatusPendingAccept).Error
 		}
 		return cancelPendingRiderEarningsInTx(tx, deliveryID)
 	})
