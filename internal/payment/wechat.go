@@ -1254,16 +1254,20 @@ func (p *WeChatProvider) refundErrandAmountInTx(tx *gorm.DB, sub PaySubject, amo
 			return nil
 		}
 		refund = roundMoney(refund)
-		res := query.NotDeleted(tx.Model(&model.ErrandOrder{})).
-			Where("id = ? AND pay_status = ? AND refunded_amount = ?", eo.ID, eo.PayStatus, eo.RefundedAmount).
-			Updates(map[string]interface{}{
-				"pay_status": model.PayStatusRefunding,
-			})
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return fmt.Errorf("%w: errand %d refund conflict", ErrInvalidState, eo.ID)
+		// 多笔支付（跑腿费/商品费）逐笔退款时，第一次已把状态置为退款中，
+		// 第二次再写相同值在 MySQL 下 RowsAffected 为 0，不能视为冲突。
+		if eo.PayStatus != model.PayStatusRefunding {
+			res := query.NotDeleted(tx.Model(&model.ErrandOrder{})).
+				Where("id = ? AND pay_status = ? AND refunded_amount = ?", eo.ID, eo.PayStatus, eo.RefundedAmount).
+				Updates(map[string]interface{}{
+					"pay_status": model.PayStatusRefunding,
+				})
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected == 0 {
+				return fmt.Errorf("%w: errand %d refund conflict", ErrInvalidState, eo.ID)
+			}
 		}
 		refundReason := reason
 		if refundReason == "" {
