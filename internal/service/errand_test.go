@@ -336,6 +336,84 @@ func TestErrandAutoConfirm(t *testing.T) {
 	}
 }
 
+func TestErrandAdminResumeAfterRiderException(t *testing.T) {
+	db, svc, dsvc, riderID := newErrandFixture(t)
+	const accountID = 105
+
+	newAcceptedOrder := func(goodsDesc string) uint64 {
+		view, err := svc.Create(accountID, ErrandCreateInput{
+			PickupAddress: "取货路", ContactName: "周八", ContactPhone: "13600000000",
+			Detail: "收货路", GoodsDesc: goodsDesc,
+		})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if _, err := svc.CreatePrepay(accountID, view.ID); err != nil {
+			t.Fatalf("prepay: %v", err)
+		}
+		view, err = svc.Get(accountID, view.ID)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if _, err := dsvc.Accept(riderID, *view.DeliveryOrderID); err != nil {
+			t.Fatalf("accept: %v", err)
+		}
+		return view.ID
+	}
+
+	// 已取货后骑手上报异常：恢复后应回到配送中，骑手可继续送达
+	id := newAcceptedOrder("奶茶 1 杯")
+	if _, err := svc.RiderPickup(riderID, id, 8.5, []string{"receipt.jpg"}); err != nil {
+		t.Fatalf("pickup: %v", err)
+	}
+	if _, err := svc.ReportExceptionByRider(riderID, id, "车辆故障"); err != nil {
+		t.Fatalf("report exception: %v", err)
+	}
+	if _, err := svc.AdminResume(id, "继续配送"); err != nil {
+		t.Fatalf("admin resume: %v", err)
+	}
+	var eo model.ErrandOrder
+	if err := db.First(&eo, id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if eo.Status != model.ErrandStatusDelivering {
+		t.Fatalf("status after resume want delivering(3), got %d", eo.Status)
+	}
+	var d model.DeliveryOrder
+	if err := db.First(&d, *eo.DeliveryOrderID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if d.Status != model.DeliveryDelivering {
+		t.Fatalf("delivery status after resume want delivering(3), got %d", d.Status)
+	}
+	if _, err := svc.RiderComplete(riderID, id, model.ErrandPayModeCash); err != nil {
+		t.Fatalf("rider should continue after resume: %v", err)
+	}
+
+	// 未取货上报异常：恢复后回到已接单，骑手可重新确认取货
+	id2 := newAcceptedOrder("咖啡 1 杯")
+	if _, err := svc.ReportExceptionByRider(riderID, id2, "商家关门"); err != nil {
+		t.Fatalf("report exception: %v", err)
+	}
+	if _, err := svc.AdminResume(id2, "继续配送"); err != nil {
+		t.Fatalf("admin resume: %v", err)
+	}
+	var eo2 model.ErrandOrder
+	if err := db.First(&eo2, id2).Error; err != nil {
+		t.Fatal(err)
+	}
+	if eo2.Status != model.ErrandStatusAccepted {
+		t.Fatalf("status after resume want accepted(2), got %d", eo2.Status)
+	}
+	var d2 model.DeliveryOrder
+	if err := db.First(&d2, *eo2.DeliveryOrderID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if d2.Status != model.DeliveryAccepted {
+		t.Fatalf("delivery status after resume want accepted(1), got %d", d2.Status)
+	}
+}
+
 func TestErrandFeeByItemCount(t *testing.T) {
 	_, svc, _, _ := newErrandFixture(t)
 	cases := []struct {

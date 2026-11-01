@@ -972,8 +972,28 @@ func (s *ErrandService) AdminResume(id uint64, remark string) (*ErrandView, erro
 			return fmt.Errorf("%w: 仅异常单可恢复", ErrErrandStatusInvalid)
 		}
 		target := model.ErrandStatusDelivering
-		if eo.PayStatus == model.PayStatusPaid {
-			target = model.ErrandStatusPendingConfirm
+		deliveryStatus := uint8(model.DeliveryDelivering)
+		var d model.DeliveryOrder
+		hasDelivery := false
+		if eo.DeliveryOrderID != nil {
+			if err := query.NotDeleted(tx).First(&d, *eo.DeliveryOrderID).Error; err == nil {
+				hasDelivery = true
+			}
+		}
+		// 按配送进度恢复：已取货回配送中，未取货回已接单，已送达回待确认。
+		// 不能只看 pay_status——先付跑腿费流程下所有正常单都是已支付。
+		if hasDelivery {
+			switch {
+			case d.DeliveredAt != nil:
+				target = model.ErrandStatusPendingConfirm
+				deliveryStatus = model.DeliveryDelivered
+			case d.StartedAt != nil:
+				target = model.ErrandStatusDelivering
+				deliveryStatus = model.DeliveryDelivering
+			case d.Status == model.DeliveryAccepted || d.Status == model.DeliveryPicking:
+				target = model.ErrandStatusAccepted
+				deliveryStatus = d.Status
+			}
 		}
 		note := appendAdminRemark(eo.ExceptionReason, remark)
 		if err := tx.Model(&eo).Updates(map[string]interface{}{
@@ -982,13 +1002,9 @@ func (s *ErrandService) AdminResume(id uint64, remark string) (*ErrandView, erro
 		}).Error; err != nil {
 			return err
 		}
-		if eo.DeliveryOrderID != nil {
-			deliveryStatus := uint8(model.DeliveryDelivering)
-			if target == model.ErrandStatusPendingConfirm {
-				deliveryStatus = model.DeliveryDelivered
-			}
+		if hasDelivery {
 			_ = tx.Model(&model.DeliveryOrder{}).
-				Where("id = ? AND status = ?", *eo.DeliveryOrderID, model.DeliveryException).
+				Where("id = ?", d.ID).
 				Updates(map[string]interface{}{"status": deliveryStatus, "exception_reason": note}).Error
 		}
 		eo.Status = target
