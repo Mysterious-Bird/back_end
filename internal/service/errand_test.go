@@ -24,6 +24,8 @@ func setupErrandTestDB(t *testing.T) *gorm.DB {
 		&model.DeliveryOrder{},
 		&model.RiderEarning{},
 		&model.FulfillmentEvent{},
+		&model.PaymentTransaction{},
+		&model.PaymentRefund{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

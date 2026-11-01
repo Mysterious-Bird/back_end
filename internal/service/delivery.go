@@ -1765,14 +1765,8 @@ func (s *DeliveryService) AdminResolveCancel(deliveryID uint64, remark string) (
 			if err := query.NotDeleted(tx).First(&eo, *d.ErrandOrderID).Error; err != nil {
 				return ErrDeliveryNotFound
 			}
-			if eo.PayMode == model.ErrandPayModePlatform && eo.PayStatus == model.PayStatusPaid {
-				sub, err := payment.ErrandSubjectFromID(tx, eo.ID, 0)
-				if err != nil {
-					return err
-				}
-				if err := s.deliveryPaymentProvider().RefundSubjectAmountInTx(tx, sub, 0, "管理员取消跑腿退款"); err != nil {
-					return err
-				}
+			if err := refundErrandPaidOrdersInTx(tx, s.deliveryPaymentProvider(), &eo, "管理员取消跑腿退款"); err != nil {
+				return err
 			}
 			if err := tx.Model(&eo).Updates(map[string]interface{}{
 				"status":           model.ErrandStatusCancelled,

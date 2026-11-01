@@ -959,7 +959,7 @@ func (s *ErrandService) AdminGet(id uint64) (*ErrandView, error) {
 	return s.Get(0, id)
 }
 
-// AdminResume 异常恢复：已付款回到待确认，否则回到配送中。
+// AdminResume 异常恢复：按配送进度回到已接单/配送中/待确认。
 func (s *ErrandService) AdminResume(id uint64, remark string) (*ErrandView, error) {
 	var out *ErrandView
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
@@ -1070,7 +1070,44 @@ func (s *ErrandService) AdminReassign(id uint64, remark string) (*ErrandView, er
 	return out, nil
 }
 
-// AdminCancel 异常取消：平台已支付则退款，现金单仅取消。
+// refundErrandPaidOrdersInTx 按实际支付流水逐笔退款。
+// 跑腿费与商品费是两笔独立支付，微信要求退款 Total 与对应 out_trade_no 的原支付金额一致，
+// 不能直接用聚合的 pay_amount。
+func refundErrandPaidOrdersInTx(tx *gorm.DB, provider payment.Provider, eo *model.ErrandOrder, reason string) error {
+	if eo.PayMode == model.ErrandPayModeCash {
+		return nil
+	}
+	var txs []model.PaymentTransaction
+	if err := tx.Where("subject_type = ? AND subject_id = ? AND status = ?",
+		model.PaySubjectErrand, eo.ID, model.PayTxStatusPaid).Find(&txs).Error; err != nil {
+		return err
+	}
+	for _, pt := range txs {
+		var refunded float64
+		if err := tx.Model(&model.PaymentRefund{}).
+			Where("order_no = ? AND status = ?", pt.OrderNo, 1).
+			Select("COALESCE(SUM(refund_amount), 0)").Scan(&refunded).Error; err != nil {
+			return err
+		}
+		amount := roundMoney(pt.PayAmount - refunded)
+		if amount <= 0 {
+			continue
+		}
+		sub := payment.PaySubject{
+			Type:      model.PaySubjectErrand,
+			ID:        eo.ID,
+			OrderNo:   pt.OrderNo,
+			Amount:    pt.PayAmount,
+			AccountID: eo.AccountID,
+		}
+		if err := provider.RefundSubjectAmountInTx(tx, sub, amount, reason); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// AdminCancel 异常取消：平台已支付则按支付流水逐笔退款，现金单仅取消。
 func (s *ErrandService) AdminCancel(id uint64, remark string) (*ErrandView, error) {
 	var out *ErrandView
 	var jobs []payment.RefundJob
@@ -1089,39 +1126,8 @@ func (s *ErrandService) AdminCancel(id uint64, remark string) (*ErrandView, erro
 			return fmt.Errorf("%w: 当前状态不可取消", ErrErrandStatusInvalid)
 		}
 		note := appendAdminRemark(eo.ExceptionReason, remark)
-		if eo.PayMode != model.ErrandPayModeCash {
-			// 旧「0 元下单」流程：跑腿费与商品费一次付清，退剩余全部
-			legacy := (eo.Status == model.ErrandStatusPendingConfirm || eo.Status == model.ErrandStatusException) &&
-				eo.GoodsPayStatus == model.PayStatusUnpaid && eo.GoodsAmount > 0
-			if eo.PayStatus == model.PayStatusPaid {
-				sub := payment.PaySubject{
-					Type:      model.PaySubjectErrand,
-					ID:        eo.ID,
-					OrderNo:   eo.OrderNo,
-					Amount:    eo.DeliveryFee,
-					AccountID: eo.AccountID,
-				}
-				refundAmount := eo.DeliveryFee
-				if legacy {
-					refundAmount = 0
-					sub.Amount = eo.PayAmount
-				}
-				if err := s.paymentProvider().RefundSubjectAmountInTx(tx, sub, refundAmount, "管理员取消跑腿退款"); err != nil {
-					return err
-				}
-			}
-			if !legacy && eo.GoodsPayStatus == model.PayStatusPaid && eo.GoodsAmount > 0 {
-				goodsSub := payment.PaySubject{
-					Type:      model.PaySubjectErrand,
-					ID:        eo.ID,
-					OrderNo:   payment.GoodsOrderNo(eo.OrderNo),
-					Amount:    eo.GoodsAmount,
-					AccountID: eo.AccountID,
-				}
-				if err := s.paymentProvider().RefundSubjectAmountInTx(tx, goodsSub, eo.GoodsAmount, "管理员取消跑腿退还商品费"); err != nil {
-					return err
-				}
-			}
+		if err := refundErrandPaidOrdersInTx(tx, s.paymentProvider(), &eo, "管理员取消跑腿退款"); err != nil {
+			return err
 		}
 		if err := tx.Model(&eo).Updates(map[string]interface{}{
 			"status":           model.ErrandStatusCancelled,
