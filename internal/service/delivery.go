@@ -143,13 +143,13 @@ func (s *DeliveryService) ListForRider(riderID uint64, scope string, page, pageS
 			model.DeliveryPendingAccept,
 		)
 	case "active":
+		// 已送达但用户未确认收货前仍算配送中，用户确认后才进入配送记录
 		q = q.Where("rider_id = ? AND status IN ?", riderID, []int{
 			int(model.DeliveryAccepted), int(model.DeliveryPicking), int(model.DeliveryDelivering),
+			int(model.DeliveryDelivered),
 		})
 	case "history":
-		q = q.Where("rider_id = ? AND status IN ?", riderID, []int{
-			int(model.DeliveryDelivered), int(model.DeliveryConfirmed),
-		})
+		q = q.Where("rider_id = ? AND status = ?", riderID, model.DeliveryConfirmed)
 	default:
 		q = q.Where(
 			"status = ? AND rider_id IS NULL AND (merchant_prepared = 1 OR (inventory_usage_id IS NOT NULL AND takeout_order_id IS NULL) OR errand_order_id IS NOT NULL)",
