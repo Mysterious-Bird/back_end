@@ -129,7 +129,7 @@ func (p *WeChatProvider) createErrandPrepay(sub PaySubject) (*PrepayResult, erro
 	if err := p.DB.
 		Where("subject_type = ? AND subject_id = ? AND order_no = ? AND status IN ?",
 			model.PaySubjectErrand, eo.ID, sub.OrderNo,
-			[]uint8{model.PayTxStatusPaid, model.PayTxStatusRefunded}).
+			[]int{int(model.PayTxStatusPaid), int(model.PayTxStatusRefunded)}).
 		First(&existingTx).Error; err == nil {
 		return alreadyPaid, nil
 	}
