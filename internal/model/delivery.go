@@ -19,6 +19,7 @@ type DeliveryOrder struct {
 	OrderID          *uint64    `gorm:"column:order_id" json:"order_id,omitempty"`
 	InventoryUsageID *uint64    `gorm:"column:inventory_usage_id" json:"inventory_usage_id,omitempty"`
 	TakeoutOrderID   *uint64    `gorm:"column:takeout_order_id" json:"takeout_order_id,omitempty"`
+	ErrandOrderID    *uint64    `gorm:"column:errand_order_id" json:"errand_order_id,omitempty"`
 	RiderID          *uint64    `json:"rider_id,omitempty"`
 	Status           uint8      `gorm:"not null;default:0" json:"status"`
 	UserConfirmed    uint8      `gorm:"not null;default:0" json:"user_confirmed"`

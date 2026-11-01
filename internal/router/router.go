@@ -90,6 +90,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 		PayTimeoutMinutes: cfg.Payment.PayTimeoutMinutes,
 	}
 	inventorySvc.DeliveryFeePaySvc = deliveryFeePaySvc
+	errandSvc := &service.ErrandService{DB: db, Payment: payProvider}
 	if wp, ok := payProvider.(*payment.WeChatProvider); ok {
 		wp.OnPaidInTx = orderSvc.AdvanceAfterPaidInTx
 		wp.OnSubjectPaidInTx = func(tx *gorm.DB, sub payment.PaySubject) error {
@@ -100,6 +101,9 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 				return deliveryFeePaySvc.MarkPaidInTx(tx, sub.ID, time.Now())
 			case model.PaySubjectOrder:
 				return orderSvc.AdvanceAfterPaidInTx(tx, sub.ID)
+			case model.PaySubjectErrand:
+				// 平台支付成功后：errand 状态与配送状态已在支付回调内推进
+				return nil
 			default:
 				return nil
 			}
@@ -109,9 +113,10 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 	startUsageExpireWorker(orderSvc)
 	startPendingPayExpireWorker(orderSvc, takeoutSvc, deliveryFeePaySvc)
 	startRefundRetryWorker(orderSvc)
+	startErrandAutoConfirmWorker(errandSvc)
 	service.MigrateBagToPendingVerifyIfEnabled(db)
 	paymentHandler := &handler.PaymentHandler{OrderSvc: orderSvc}
-	deliverySvc := &service.DeliveryService{DB: db, InventorySvc: inventorySvc, DeliveryFeePaySvc: deliveryFeePaySvc}
+	deliverySvc := &service.DeliveryService{DB: db, InventorySvc: inventorySvc, DeliveryFeePaySvc: deliveryFeePaySvc, ErrandSvc: errandSvc}
 	riderEarningSvc := &service.RiderEarningService{DB: db}
 	dashboardSvc := &service.DashboardService{DB: db}
 	categorySvc := &service.CategoryService{DB: db}
@@ -146,6 +151,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 		InventorySvc: inventorySvc, DashboardSvc: dashboardSvc, DeliverySvc: deliverySvc,
 	}
 	riderHandler := &handler.RiderHandler{DeliverySvc: deliverySvc, EarningSvc: riderEarningSvc}
+	errandHandler := &handler.ErrandHandler{Svc: errandSvc}
 	adminDashboardHandler := &handler.AdminDashboardHandler{
 		DashboardSvc: dashboardSvc, OrderSvc: orderSvc, VerifySvc: verifySvc,
 	}
@@ -238,6 +244,14 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 		user.POST("/bargain/sessions/:id/help", bargainHandler.Help)
 		user.POST("/bargain/sessions/:id/cancel", bargainHandler.Cancel)
 		registerUserRoutes(user, userHandler, couponHandler, paymentHandler, takeoutHandler, deliveryFeeHandler, fulfillmentEventHandler)
+		user.GET("/user/errand-settings", errandHandler.UserGetSettings)
+		user.POST("/user/errand-orders", errandHandler.Create)
+		user.GET("/user/errand-orders", errandHandler.List)
+		user.GET("/user/errand-orders/:id", errandHandler.Get)
+		user.POST("/user/errand-orders/:id/cancel", errandHandler.Cancel)
+		user.POST("/user/errand-orders/:id/pay", errandHandler.Pay)
+		user.POST("/user/errand-orders/:id/confirm", errandHandler.Confirm)
+		user.POST("/user/errand-orders/:id/exception", errandHandler.Appeal)
 
 		merchant := authorized.Group("/merchant")
 		merchant.Use(middleware.RequireAccountTypes(model.AccountTypeMerchant, model.AccountTypeAdmin))
@@ -247,12 +261,22 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 		admin.Use(middleware.RequireAccountTypes(model.AccountTypeAdmin))
 		admin.GET("/bargain-settings", bargainHandler.GetSettings)
 		admin.PATCH("/bargain-settings", bargainHandler.UpdateSettings)
+		admin.GET("/errand-orders", errandHandler.AdminList)
+		admin.GET("/errand-orders/:id", errandHandler.AdminGet)
+		admin.POST("/errand-orders/:id/resolve-resume", errandHandler.AdminResume)
+		admin.POST("/errand-orders/:id/resolve-reassign", errandHandler.AdminReassign)
+		admin.POST("/errand-orders/:id/resolve-cancel", errandHandler.AdminCancel)
+		admin.GET("/errand-settings", errandHandler.AdminGetSettings)
+		admin.PATCH("/errand-settings", errandHandler.AdminUpdateSettings)
 		admin.GET("/bargains", bargainHandler.ListAdmin)
 		registerAdminRoutes(admin, adminHandler, adminDashboardHandler, couponHandler, adminExtraHandler, announcementHandler, deliveryZoneHandler, activityHandler, fulfillmentEventHandler, homeCarouselHandler, homeFeaturedHandler)
 
 		rider := authorized.Group("/rider")
 		rider.Use(middleware.RequireRider())
 		registerRiderRoutes(rider, riderHandler)
+		rider.POST("/deliveries/:id/errand-pickup", errandHandler.RiderPickup)
+		rider.POST("/deliveries/:id/errand-complete", errandHandler.RiderComplete)
+		rider.POST("/deliveries/:id/errand-exception", errandHandler.RiderException)
 	}
 
 	return r
@@ -367,6 +391,26 @@ func startRefundRetryWorker(orderSvc *service.OrderService) {
 		}
 		run()
 		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			run()
+		}
+	}()
+}
+
+// startErrandAutoConfirmWorker 跑腿单超时自动确认送达（默认 24h，可配置）。
+func startErrandAutoConfirmWorker(errandSvc *service.ErrandService) {
+	go func() {
+		run := func() {
+			n, err := errandSvc.AutoConfirmStale(time.Now())
+			if err != nil {
+				log.Printf("跑腿自动确认部分失败: %v (本批成功 %d)", err, n)
+			} else if n > 0 {
+				log.Printf("跑腿单自动确认送达 %d 笔", n)
+			}
+		}
+		run()
+		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
 			run()

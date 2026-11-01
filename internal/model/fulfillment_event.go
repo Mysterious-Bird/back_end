@@ -11,6 +11,7 @@ const (
 	FulfillmentSubjectDelivery    = "delivery"
 	FulfillmentSubjectUsage       = "usage"
 	FulfillmentSubjectDeliveryFee = "delivery_fee"
+	FulfillmentSubjectErrand      = "errand"
 )
 
 const (

@@ -145,7 +145,7 @@ func (h *FulfillmentEventHandler) ListAdminEvents(c *gin.Context) {
 	switch subjectType {
 	case model.FulfillmentSubjectOrder, model.FulfillmentSubjectTakeout,
 		model.FulfillmentSubjectDelivery, model.FulfillmentSubjectUsage,
-		model.FulfillmentSubjectDeliveryFee:
+		model.FulfillmentSubjectDeliveryFee, model.FulfillmentSubjectErrand:
 	default:
 		response.BadRequest(c, "subject_type 无效")
 		return

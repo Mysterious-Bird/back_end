@@ -82,6 +82,7 @@ type DeliveryMerchantBrief struct {
 
 type DeliveryView struct {
 	model.DeliveryOrder
+	Errand             *model.ErrandOrder     `json:"errand,omitempty"`
 	StatusText         string                 `json:"status_text"`
 	AddressSnapshot    *model.AddressSnapshot `json:"address_snapshot,omitempty"`
 	UsageItems         []DeliveryUsageLine    `json:"usage_items,omitempty"`
@@ -112,11 +113,17 @@ type DeliveryService struct {
 	DB                *gorm.DB
 	InventorySvc      *InventoryService
 	DeliveryFeePaySvc *DeliveryFeePayService
+	ErrandSvc         *ErrandService
 }
 
 // IsBagErrand 背包跑腿：有 usage、非外卖主单。
 func IsBagErrand(d *model.DeliveryOrder) bool {
 	return d != nil && d.InventoryUsageID != nil && d.TakeoutOrderID == nil
+}
+
+// IsErrand 独立跑腿配送单。
+func IsErrand(d *model.DeliveryOrder) bool {
+	return d != nil && d.ErrandOrderID != nil
 }
 
 func (s *DeliveryService) ListForRider(riderID uint64, scope string, page, pageSize int) ([]DeliveryView, int64, error) {
@@ -132,7 +139,7 @@ func (s *DeliveryService) ListForRider(riderID uint64, scope string, page, pageS
 	switch scope {
 	case "pending":
 		q = q.Where(
-			"status = ? AND rider_id IS NULL AND (merchant_prepared = 1 OR (inventory_usage_id IS NOT NULL AND takeout_order_id IS NULL))",
+			"status = ? AND rider_id IS NULL AND (merchant_prepared = 1 OR (inventory_usage_id IS NOT NULL AND takeout_order_id IS NULL) OR errand_order_id IS NOT NULL)",
 			model.DeliveryPendingAccept,
 		)
 	case "active":
@@ -145,7 +152,7 @@ func (s *DeliveryService) ListForRider(riderID uint64, scope string, page, pageS
 		})
 	default:
 		q = q.Where(
-			"status = ? AND rider_id IS NULL AND (merchant_prepared = 1 OR (inventory_usage_id IS NOT NULL AND takeout_order_id IS NULL))",
+			"status = ? AND rider_id IS NULL AND (merchant_prepared = 1 OR (inventory_usage_id IS NOT NULL AND takeout_order_id IS NULL) OR errand_order_id IS NOT NULL)",
 			model.DeliveryPendingAccept,
 		)
 	}
@@ -260,7 +267,7 @@ func (s *DeliveryService) Accept(riderID, deliveryID uint64) (*DeliveryView, err
 			}
 			return err
 		}
-		if !IsBagErrand(&d) && d.MerchantPrepared != 1 {
+		if !IsBagErrand(&d) && !IsErrand(&d) && d.MerchantPrepared != 1 {
 			return ErrDeliveryNotFound
 		}
 		if d.InventoryUsageID != nil || d.OrderID == nil {
@@ -280,7 +287,7 @@ func (s *DeliveryService) Accept(riderID, deliveryID uint64) (*DeliveryView, err
 				}
 				active = 1
 			}
-			if active == 0 && d.OrderID == nil {
+			if active == 0 && d.OrderID == nil && d.ErrandOrderID == nil {
 				if d.TakeoutOrderID == nil {
 					return ErrDeliveryNotFound
 				}
@@ -308,6 +315,17 @@ func (s *DeliveryService) Accept(riderID, deliveryID uint64) (*DeliveryView, err
 		if d.OrderID != nil {
 			if err := tx.Model(&model.Order{}).Where("id = ?", *d.OrderID).Update("status", model.OrderStatusShipping).Error; err != nil {
 				return err
+			}
+		}
+		if d.ErrandOrderID != nil {
+			res := tx.Model(&model.ErrandOrder{}).
+				Where("id = ? AND status = ?", *d.ErrandOrderID, model.ErrandStatusPendingAccept).
+				Update("status", model.ErrandStatusAccepted)
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected == 0 {
+				return ErrDeliveryNotFound
 			}
 		}
 		rid := riderID
@@ -347,6 +365,10 @@ func (s *DeliveryService) Start(riderID, deliveryID uint64) (*DeliveryView, erro
 	}
 	if IsBagErrand(&d) {
 		return nil, ErrBagErrandStartNotAllowed
+	}
+	if IsErrand(&d) {
+		// 跑腿取货走专用接口（需录代购商品费/小票）
+		return nil, ErrDeliveryStatusInvalid
 	}
 	if d.Status != model.DeliveryAccepted {
 		return nil, ErrDeliveryStatusInvalid
@@ -554,6 +576,14 @@ func (s *DeliveryService) ReportException(riderID, deliveryID uint64, reason str
 			return ErrDeliveryStatusInvalid
 		}
 		reasonText := "骑手上报：" + reason
+		if d.ErrandOrderID != nil {
+			_ = tx.Model(&model.ErrandOrder{}).
+				Where("id = ?", *d.ErrandOrderID).
+				Updates(map[string]interface{}{
+					"status":           model.ErrandStatusException,
+					"exception_reason": reasonText,
+				}).Error
+		}
 		return tx.Model(&d).Updates(map[string]interface{}{
 			"status":           model.DeliveryException,
 			"exception_reason": reasonText,
@@ -588,6 +618,14 @@ func (s *DeliveryService) ReportExceptionByUser(accountID, deliveryID uint64, re
 			return ErrDeliveryStatusInvalid
 		}
 		reasonText := "用户上报：" + reason
+		if d.ErrandOrderID != nil {
+			_ = tx.Model(&model.ErrandOrder{}).
+				Where("id = ?", *d.ErrandOrderID).
+				Updates(map[string]interface{}{
+					"status":           model.ErrandStatusException,
+					"exception_reason": reasonText,
+				}).Error
+		}
 		if err := tx.Model(&d).Updates(map[string]interface{}{
 			"status":           model.DeliveryException,
 			"exception_reason": reasonText,
@@ -643,6 +681,9 @@ func deliveryBelongsToMerchant(tx *gorm.DB, d *model.DeliveryOrder, merchantID u
 func (s *DeliveryService) Complete(riderID, deliveryID uint64, input CompleteDeliveryInput) (*DeliveryView, error) {
 	var d model.DeliveryOrder
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
+		if err := query.NotDeleted(tx).Select("errand_order_id").First(&d, deliveryID).Error; err == nil && IsErrand(&d) {
+			return fmt.Errorf("%w: 跑腿单请使用送达收款接口", ErrDeliveryStatusInvalid)
+		}
 		if err := query.NotDeleted(tx).
 			Where("id = ? AND rider_id = ? AND status IN ?", deliveryID, riderID,
 				[]int{int(model.DeliveryAccepted), int(model.DeliveryPicking), int(model.DeliveryDelivering)}).
@@ -729,6 +770,16 @@ func (s *DeliveryService) ConfirmReceipt(accountID, deliveryID uint64) (*Deliver
 				Update("status", model.TakeoutStatusCompleted).Error; err != nil {
 				return err
 			}
+		}
+		if d.ErrandOrderID != nil && s.ErrandSvc != nil {
+			var eo model.ErrandOrder
+			if err := query.NotDeleted(tx).First(&eo, *d.ErrandOrderID).Error; err != nil {
+				return ErrDeliveryNotFound
+			}
+			if err := s.ErrandSvc.confirmInTx(tx, &eo, model.FulfillmentActorUser); err != nil {
+				return err
+			}
+			return nil
 		}
 		// 核销已完成 usage 时跳过；仅待发货 usage 推进为已完成
 		usageQ := tx.Model(&model.UserInventoryUsage{}).
@@ -844,8 +895,9 @@ func (s *DeliveryService) userDeliveryQuery(accountID uint64) *gorm.DB {
 		`order_id IN (SELECT id FROM `+"`order`"+` WHERE account_id = ? AND is_deleted = 0)
 		OR inventory_usage_id IN (SELECT id FROM user_inventory_usage WHERE account_id = ? AND is_deleted = 0)
 		OR id IN (SELECT delivery_order_id FROM user_inventory_usage WHERE account_id = ? AND delivery_order_id IS NOT NULL AND is_deleted = 0)
-		OR takeout_order_id IN (SELECT id FROM takeout_order WHERE account_id = ? AND is_deleted = 0)`,
-		accountID, accountID, accountID, accountID,
+		OR takeout_order_id IN (SELECT id FROM takeout_order WHERE account_id = ? AND is_deleted = 0)
+		OR errand_order_id IN (SELECT id FROM errand_order WHERE account_id = ? AND is_deleted = 0)`,
+		accountID, accountID, accountID, accountID, accountID,
 	)
 }
 
@@ -997,6 +1049,7 @@ func toDeliveryView(db *gorm.DB, d model.DeliveryOrder) DeliveryView {
 		StatusText:    model.DeliveryStatusText(d.Status),
 	}
 	attachDeliveryUsageItems(db, &view)
+	attachErrandDeliveryData(db, &view)
 	if view.TakeoutOrderID != nil {
 		attachTakeoutDeliveryData(db, &view)
 	}
@@ -1153,6 +1206,39 @@ func attachDeliveryUsageItems(db *gorm.DB, view *DeliveryView) {
 	view.UsageItems = lines
 	if view.Merchant == nil && usages[0].MerchantProfile != nil {
 		view.Merchant = merchantBriefFromProfile(usages[0].MerchantProfile)
+	}
+}
+
+// attachErrandDeliveryData 跑腿单：取送地址、商品描述、款项、取货点摘要。
+func attachErrandDeliveryData(db *gorm.DB, view *DeliveryView) {
+	if db == nil || view == nil || view.ErrandOrderID == nil {
+		return
+	}
+	var eo model.ErrandOrder
+	if err := query.NotDeleted(db).First(&eo, *view.ErrandOrderID).Error; err != nil {
+		return
+	}
+	// 未接单前不向骑手暴露券码/券码截图，接单后才可查看核销
+	if view.RiderID == nil {
+		eo.VoucherCode = ""
+		eo.VoucherPhotos = nil
+		eo.GoodsReceiptPhotos = nil
+	}
+	view.Errand = &eo
+	view.AddressSnapshot = eo.DropSnapshot
+	view.GoodsAmount = eo.GoodsAmount
+	view.TotalAmount = eo.PayAmount
+	if eo.Remark != nil {
+		view.DeliveryTimeRemark = *eo.Remark
+	}
+	if eo.PickupSnapshot != nil {
+		view.Merchant = &DeliveryMerchantBrief{
+			ShopName:     eo.PickupSnapshot.ShopName,
+			Address:      eo.PickupSnapshot.Address,
+			ContactPhone: eo.PickupSnapshot.ContactPhone,
+			Latitude:     eo.PickupSnapshot.Latitude,
+			Longitude:    eo.PickupSnapshot.Longitude,
+		}
 	}
 }
 
@@ -1333,6 +1419,17 @@ func finalizeDeliveryDisplay(view *DeliveryView) {
 		view.ProductImage = view.InventoryUsage.Product.CoverURL
 		if view.ProductName == "" {
 			view.ProductName = view.InventoryUsage.Product.Name
+		}
+	}
+	if view.Errand != nil {
+		view.ProductName = view.Errand.GoodsDesc
+		if len(view.UsageItems) > 0 {
+			view.UsageItems = nil
+		}
+		view.GoodsAmount = view.Errand.GoodsAmount
+		view.TotalAmount = view.Errand.PayAmount
+		if view.TotalAmount <= 0 {
+			view.TotalAmount = view.Errand.DeliveryFee
 		}
 	}
 }
@@ -1631,6 +1728,36 @@ func (s *DeliveryService) AdminResolveCancel(deliveryID uint64, remark string) (
 			return err
 		}
 		reasonText := appendAdminRemark(d.ExceptionReason, remark)
+
+		if d.ErrandOrderID != nil {
+			var eo model.ErrandOrder
+			if err := query.NotDeleted(tx).First(&eo, *d.ErrandOrderID).Error; err != nil {
+				return ErrDeliveryNotFound
+			}
+			if eo.PayMode == model.ErrandPayModePlatform && eo.PayStatus == model.PayStatusPaid {
+				sub, err := payment.ErrandSubjectFromID(tx, eo.ID, 0)
+				if err != nil {
+					return err
+				}
+				if err := s.deliveryPaymentProvider().RefundSubjectAmountInTx(tx, sub, 0, "管理员取消跑腿退款"); err != nil {
+					return err
+				}
+			}
+			if err := tx.Model(&eo).Updates(map[string]interface{}{
+				"status":           model.ErrandStatusCancelled,
+				"cancel_reason":    reasonText,
+				"exception_reason": reasonText,
+			}).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(d).Updates(map[string]interface{}{
+				"status":           model.DeliveryCancelled,
+				"exception_reason": reasonText,
+			}).Error; err != nil {
+				return err
+			}
+			return cancelPendingRiderEarningsInTx(tx, deliveryID)
+		}
 
 		if d.TakeoutOrderID != nil {
 			if err := s.cancelPaidTakeoutForDeliveryInTx(tx, *d.TakeoutOrderID, reasonText); err != nil {

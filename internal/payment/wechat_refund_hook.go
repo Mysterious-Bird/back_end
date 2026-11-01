@@ -239,8 +239,36 @@ func releaseRefundPending(job RefundJob, reason string) {
 	case model.PaySubjectDeliveryFee:
 		releaseDeliveryFeeRefundPending(job.Provider, job.SubjectID)
 		return
+	case model.PaySubjectErrand:
+		releaseErrandRefundPending(job.Provider, job.SubjectID)
+		return
 	default:
 		releaseOrderRefundPending(job.Provider, job.OrderID, job.RefundAmt, reason)
+	}
+}
+
+func releaseErrandRefundPending(p *WeChatProvider, errandID uint64) {
+	if p == nil || p.DB == nil || errandID == 0 {
+		return
+	}
+	err := p.DB.Transaction(func(tx *gorm.DB) error {
+		var eo model.ErrandOrder
+		if err := query.NotDeleted(tx).Select("id", "pay_status", "refunded_amount").
+			First(&eo, errandID).Error; err != nil {
+			return err
+		}
+		if eo.PayStatus != model.PayStatusRefunding {
+			return nil
+		}
+		status := model.PayStatusPaid
+		if eo.RefundedAmount > 0 {
+			status = model.PayStatusPartialRefunded
+		}
+		return query.NotDeleted(tx.Model(&model.ErrandOrder{})).Where("id = ?", errandID).
+			Updates(map[string]interface{}{"pay_status": status}).Error
+	})
+	if err != nil {
+		log.Printf("[wechat refund] release errand pending %d failed: %v", errandID, err)
 	}
 }
 

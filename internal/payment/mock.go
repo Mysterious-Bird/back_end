@@ -42,9 +42,42 @@ func (p *MockProvider) SettleSubjectPaidInTx(tx *gorm.DB, sub PaySubject, at tim
 		return p.settleTakeoutPaidInTx(tx, sub.ID, at)
 	case model.PaySubjectDeliveryFee:
 		return p.settleDeliveryFeePaidInTx(tx, sub.ID, at)
+	case model.PaySubjectErrand:
+		return p.settleErrandPaidInTx(tx, sub.ID, at)
 	default:
 		return ErrInvalidState
 	}
+}
+
+func (p *MockProvider) settleErrandPaidInTx(tx *gorm.DB, errandID uint64, at time.Time) error {
+	if errandID == 0 {
+		return ErrInvalidState
+	}
+	res := query.NotDeleted(tx.Model(&model.ErrandOrder{})).
+		Where("id = ? AND pay_status = ?", errandID, model.PayStatusUnpaid).
+		Updates(map[string]interface{}{
+			"pay_status": model.PayStatusPaid,
+			"paid_at":    at,
+			"status":     model.ErrandStatusPendingConfirm,
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		var eo model.ErrandOrder
+		if err := query.NotDeleted(tx).Select("pay_status").First(&eo, errandID).Error; err != nil {
+			return err
+		}
+		if eo.PayStatus == model.PayStatusPaid {
+			return nil
+		}
+		return ErrInvalidState
+	}
+	_ = tx.Model(&model.DeliveryOrder{}).
+		Where("errand_order_id = ? AND status IN ?", errandID,
+			[]int{int(model.DeliveryAccepted), int(model.DeliveryPicking), int(model.DeliveryDelivering)}).
+		Updates(map[string]interface{}{"status": model.DeliveryDelivered, "delivered_at": at})
+	return nil
 }
 
 func (p *MockProvider) settleOrderPaidInTx(tx *gorm.DB, orderID uint64, at time.Time) error {
@@ -122,9 +155,39 @@ func (p *MockProvider) RefundSubjectAmountInTx(tx *gorm.DB, sub PaySubject, amou
 		return p.refundTakeoutAmountInTx(tx, sub.ID, amount, reason)
 	case model.PaySubjectDeliveryFee:
 		return p.refundDeliveryFeeAmountInTx(tx, sub.ID, amount, reason)
+	case model.PaySubjectErrand:
+		return p.refundErrandAmountInTx(tx, sub.ID, amount, reason)
 	default:
 		return ErrInvalidState
 	}
+}
+
+func (p *MockProvider) refundErrandAmountInTx(tx *gorm.DB, errandID uint64, amount float64, reason string) error {
+	if errandID == 0 {
+		return ErrInvalidState
+	}
+	_ = reason
+	var eo model.ErrandOrder
+	if err := query.NotDeleted(tx.Clauses(clause.Locking{Strength: "UPDATE"})).
+		Select("id", "pay_status", "pay_amount", "refunded_amount").
+		First(&eo, errandID).Error; err != nil {
+		return err
+	}
+	return p.applyRefundAmount(tx, eo.PayStatus, eo.PayAmount, eo.RefundedAmount, 0, amount, func(refund float64, status uint8, newRefunded float64) error {
+		res := query.NotDeleted(tx.Model(&model.ErrandOrder{})).
+			Where("id = ? AND pay_status = ? AND refunded_amount = ?", errandID, eo.PayStatus, eo.RefundedAmount).
+			Updates(map[string]interface{}{
+				"pay_status":      status,
+				"refunded_amount": newRefunded,
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return fmt.Errorf("%w: errand %d refund conflict", ErrInvalidState, errandID)
+		}
+		return nil
+	})
 }
 
 func (p *MockProvider) refundOrderAmountInTx(tx *gorm.DB, orderID uint64, amount float64, reason string) error {
@@ -263,9 +326,39 @@ func (p *MockProvider) CreatePrepayForSubject(sub PaySubject) (*PrepayResult, er
 		return p.createTakeoutPrepay(sub)
 	case model.PaySubjectDeliveryFee:
 		return p.createDeliveryFeePrepay(sub)
+	case model.PaySubjectErrand:
+		return p.createErrandPrepay(sub)
 	default:
 		return nil, ErrInvalidState
 	}
+}
+
+func (p *MockProvider) createErrandPrepay(sub PaySubject) (*PrepayResult, error) {
+	var eo model.ErrandOrder
+	if err := query.NotDeleted(p.DB).
+		Where("id = ? AND account_id = ?", sub.ID, sub.AccountID).
+		First(&eo).Error; err != nil {
+		return nil, err
+	}
+	if eo.PayStatus == model.PayStatusPaid {
+		return &PrepayResult{
+			Provider: p.Name(), AlreadyPaid: true, NeedPay: false,
+			Message: "模拟支付已结算",
+		}, nil
+	}
+	if eo.PayStatus != model.PayStatusUnpaid {
+		return nil, ErrInvalidState
+	}
+	now := time.Now()
+	if err := p.DB.Transaction(func(tx *gorm.DB) error {
+		return p.settleErrandPaidInTx(tx, eo.ID, now)
+	}); err != nil {
+		return nil, err
+	}
+	return &PrepayResult{
+		Provider: p.Name(), AlreadyPaid: true, NeedPay: false,
+		Message: "模拟支付已结算",
+	}, nil
 }
 
 func (p *MockProvider) createOrderPrepay(sub PaySubject) (*PrepayResult, error) {

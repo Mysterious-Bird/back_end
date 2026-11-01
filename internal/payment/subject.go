@@ -36,6 +36,8 @@ func SubjectTypeFromOrderNo(orderNo string) string {
 		return model.PaySubjectTakeout
 	case strings.HasPrefix(orderNo, "F"):
 		return model.PaySubjectDeliveryFee
+	case strings.HasPrefix(orderNo, "P"):
+		return model.PaySubjectErrand
 	default:
 		return model.PaySubjectOrder
 	}
@@ -98,6 +100,25 @@ func DeliveryFeeSubjectFromID(db *gorm.DB, feeOrderID, accountID uint64) (PaySub
 	}, nil
 }
 
+// ErrandSubjectFromID 加载跑腿单并构造 PaySubject。
+func ErrandSubjectFromID(db *gorm.DB, errandID, accountID uint64) (PaySubject, error) {
+	var eo model.ErrandOrder
+	q := query.NotDeleted(db).Where("id = ?", errandID)
+	if accountID > 0 {
+		q = q.Where("account_id = ?", accountID)
+	}
+	if err := q.First(&eo).Error; err != nil {
+		return PaySubject{}, err
+	}
+	return PaySubject{
+		Type:      model.PaySubjectErrand,
+		ID:        eo.ID,
+		OrderNo:   eo.OrderNo,
+		Amount:    eo.PayAmount,
+		AccountID: eo.AccountID,
+	}, nil
+}
+
 // ResolveSubjectByOrderNo 用 out_trade_no 反查支付主体（微信回调/查单）。
 func ResolveSubjectByOrderNo(db *gorm.DB, orderNo string) (PaySubject, error) {
 	if orderNo == "" {
@@ -105,6 +126,18 @@ func ResolveSubjectByOrderNo(db *gorm.DB, orderNo string) (PaySubject, error) {
 	}
 	subType := SubjectTypeFromOrderNo(orderNo)
 	switch subType {
+	case model.PaySubjectErrand:
+		var eo model.ErrandOrder
+		if err := query.NotDeleted(db).Where("order_no = ?", orderNo).First(&eo).Error; err != nil {
+			return PaySubject{}, err
+		}
+		return PaySubject{
+			Type:      model.PaySubjectErrand,
+			ID:        eo.ID,
+			OrderNo:   eo.OrderNo,
+			Amount:    eo.PayAmount,
+			AccountID: eo.AccountID,
+		}, nil
 	case model.PaySubjectTakeout:
 		var to model.TakeoutOrder
 		if err := query.NotDeleted(db).Where("order_no = ?", orderNo).First(&to).Error; err != nil {

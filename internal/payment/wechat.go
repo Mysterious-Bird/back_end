@@ -72,9 +72,107 @@ func (p *WeChatProvider) CreatePrepayForSubject(sub PaySubject) (*PrepayResult, 
 		return p.createTakeoutPrepay(sub)
 	case model.PaySubjectDeliveryFee:
 		return p.createDeliveryFeePrepay(sub)
+	case model.PaySubjectErrand:
+		return p.createErrandPrepay(sub)
 	default:
 		return nil, ErrInvalidState
 	}
+}
+
+// createErrandPrepay 跑腿单送达时平台支付（金额 = 跑腿费 + 代购商品费）。
+func (p *WeChatProvider) createErrandPrepay(sub PaySubject) (*PrepayResult, error) {
+	var eo model.ErrandOrder
+	if err := query.NotDeleted(p.DB).
+		Where("id = ? AND account_id = ?", sub.ID, sub.AccountID).
+		First(&eo).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("%w: 跑腿订单不存在", ErrNotSupported)
+		}
+		return nil, err
+	}
+	if eo.Status != model.ErrandStatusAccepted && eo.Status != model.ErrandStatusDelivering {
+		return nil, ErrInvalidState
+	}
+	if eo.PayStatus != model.PayStatusUnpaid {
+		return &PrepayResult{Provider: p.Name(), AlreadyPaid: true, NeedPay: false,
+			Message: "订单已支付"}, nil
+	}
+	amount := eo.PayAmount
+	if amount <= 0 {
+		amount = roundMoney(eo.DeliveryFee + eo.GoodsAmount)
+	}
+	if amount <= 0 {
+		return nil, ErrInvalidState
+	}
+
+	var existingTx model.PaymentTransaction
+	if err := paidTransactionBySubject(p.DB, model.PaySubjectErrand, eo.ID).First(&existingTx).Error; err == nil {
+		return &PrepayResult{Provider: p.Name(), AlreadyPaid: true, NeedPay: false,
+			Message: "订单已支付"}, nil
+	}
+	if reused, err := p.reuseOpenPrepay(model.PaySubjectErrand, eo.ID, eo.OrderNo, eo.PayExpireAt); err != nil {
+		return nil, err
+	} else if reused != nil {
+		return reused, nil
+	}
+
+	var account model.Account
+	if err := query.NotDeleted(p.DB).Select("id", "openid").First(&account, sub.AccountID).Error; err != nil {
+		return nil, fmt.Errorf("获取用户 openid 失败: %w", err)
+	}
+	if account.OpenID == nil || *account.OpenID == "" {
+		return nil, fmt.Errorf("用户未绑定微信 openid")
+	}
+
+	expireTime := ""
+	if eo.PayExpireAt != nil {
+		expireTime = eo.PayExpireAt.Format(time.RFC3339)
+	}
+	prepayResp, err := p.Client.CreateJSAPIPrepay(&wechatv3.CreateJSAPIPrepayRequest{
+		AppID:       p.AppID,
+		MchID:       p.MchID,
+		Description: "雨季新江跑腿",
+		OutTradeNo:  eo.OrderNo,
+		NotifyURL:   p.NotifyURL,
+		Amount: wechatv3.PrepayAmount{
+			Total:    wechatv3.YuanToFen(amount),
+			Currency: "CNY",
+		},
+		Payer: wechatv3.PrepayPayer{
+			OpenID: *account.OpenID,
+		},
+		TimeExpire: expireTime,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("微信下单失败: %w", err)
+	}
+
+	prepayID := prepayResp.PrepayID
+	pt := model.PaymentTransaction{
+		SubjectType: model.PaySubjectErrand,
+		SubjectID:   eo.ID,
+		OrderID:     0,
+		OrderNo:     eo.OrderNo,
+		PrepayID:    &prepayID,
+		PayAmount:   amount,
+		Status:      model.PayTxStatusPrepay,
+	}
+	if err := p.DB.Create(&pt).Error; err != nil {
+		if isDuplicateKey(err) {
+			return p.CreatePrepayForSubject(sub)
+		}
+		return nil, err
+	}
+	params, err := p.Client.Signer().SignPrepay(p.AppID, prepayID)
+	if err != nil {
+		return nil, fmt.Errorf("生成支付签名失败: %w", err)
+	}
+	return &PrepayResult{
+		Provider: p.Name(),
+		NeedPay:  true,
+		Params:   params,
+		Message:  "请调起微信支付",
+	}, nil
 }
 
 func (p *WeChatProvider) createOrderPrepay(sub PaySubject) (*PrepayResult, error) {
@@ -649,6 +747,43 @@ func (p *WeChatProvider) markSubjectPaidInTx(tx *gorm.DB, sub PaySubject, at tim
 			}
 		}
 		return nil
+	case model.PaySubjectErrand:
+		res := query.NotDeleted(tx.Model(&model.ErrandOrder{})).
+			Where("id = ? AND pay_status = ?", sub.ID, model.PayStatusUnpaid).
+			Updates(map[string]interface{}{
+				"pay_status": model.PayStatusPaid,
+				"paid_at":    at,
+				"status":     model.ErrandStatusPendingConfirm,
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			var eo model.ErrandOrder
+			if err := query.NotDeleted(tx).Select("pay_status").First(&eo, sub.ID).Error; err != nil {
+				return err
+			}
+			if eo.PayStatus != model.PayStatusPaid {
+				return ErrInvalidState
+			}
+			return nil
+		}
+		// 支付成功即视为送达完成，推进配送子单为「待确认收货」
+		_ = tx.Model(&model.DeliveryOrder{}).
+			Where("errand_order_id = ? AND status IN ?", sub.ID,
+				[]int{int(model.DeliveryAccepted), int(model.DeliveryPicking), int(model.DeliveryDelivering)}).
+			Updates(map[string]interface{}{"status": model.DeliveryDelivered, "delivered_at": at})
+		detail, _ := json.Marshal(map[string]interface{}{"amount": sub.Amount})
+		_ = tx.Create(&model.FulfillmentEvent{
+			SubjectType: model.FulfillmentSubjectErrand,
+			SubjectID:   sub.ID,
+			EventCode:   model.EventPaid,
+			ActorRole:   model.FulfillmentActorUser,
+			Title:       "平台支付成功",
+			Detail:      detail,
+			CreatedAt:   at,
+		}).Error
+		return nil
 	default:
 		return ErrInvalidState
 	}
@@ -730,6 +865,8 @@ func (p *WeChatProvider) handleRefundSuccess(data []byte) (*NotifyResult, error)
 			return p.applyTakeoutRefundInTx(tx, pt, refundYuan)
 		case model.PaySubjectDeliveryFee:
 			return p.applyDeliveryFeeRefundInTx(tx, pt, refundYuan)
+		case model.PaySubjectErrand:
+			return p.applyErrandRefundInTx(tx, pt, refundYuan)
 		default:
 			return p.applyOrderRefundInTx(tx, pt, refundYuan)
 		}
@@ -845,6 +982,33 @@ func (p *WeChatProvider) applyTakeoutRefundInTx(tx *gorm.DB, pt model.PaymentTra
 	return nil
 }
 
+func (p *WeChatProvider) applyErrandRefundInTx(tx *gorm.DB, pt model.PaymentTransaction, refundYuan float64) error {
+	var eo model.ErrandOrder
+	if err := query.NotDeleted(tx.Clauses(clause.Locking{Strength: "UPDATE"})).
+		Select("id", "pay_status", "pay_amount", "refunded_amount").
+		First(&eo, pt.SubjectID).Error; err != nil {
+		return err
+	}
+	newRefunded := eo.RefundedAmount + refundYuan
+	if newRefunded > eo.PayAmount {
+		newRefunded = eo.PayAmount
+	}
+	status := model.PayStatusPartialRefunded
+	if newRefunded+0.0001 >= eo.PayAmount {
+		status = model.PayStatusRefunded
+	}
+	if err := query.NotDeleted(tx.Model(&model.ErrandOrder{})).Where("id = ?", eo.ID).Updates(map[string]interface{}{
+		"refunded_amount": newRefunded,
+		"pay_status":      status,
+	}).Error; err != nil {
+		return err
+	}
+	if pt.Status != model.PayTxStatusRefunded && status == model.PayStatusRefunded {
+		_ = tx.Model(&pt).Update("status", model.PayTxStatusRefunded).Error
+	}
+	return nil
+}
+
 func (p *WeChatProvider) applyDeliveryFeeRefundInTx(tx *gorm.DB, pt model.PaymentTransaction, refundYuan float64) error {
 	var fee model.DeliveryFeeOrder
 	if err := query.NotDeleted(tx.Clauses(clause.Locking{Strength: "UPDATE"})).
@@ -901,6 +1065,64 @@ func (p *WeChatProvider) RefundSubjectAmountInTx(tx *gorm.DB, sub PaySubject, am
 		return p.refundTakeoutAmountInTx(tx, sub, amount, reason)
 	case model.PaySubjectDeliveryFee:
 		return p.refundDeliveryFeeAmountInTx(tx, sub, amount, reason)
+	case model.PaySubjectErrand:
+		return p.refundErrandAmountInTx(tx, sub, amount, reason)
+	default:
+		return ErrInvalidState
+	}
+}
+
+func (p *WeChatProvider) refundErrandAmountInTx(tx *gorm.DB, sub PaySubject, amount float64, reason string) error {
+	var eo model.ErrandOrder
+	if err := query.NotDeleted(tx.Clauses(clause.Locking{Strength: "UPDATE"})).
+		Select("id", "order_no", "pay_status", "pay_amount", "refunded_amount").
+		First(&eo, sub.ID).Error; err != nil {
+		return err
+	}
+	switch eo.PayStatus {
+	case model.PayStatusUnpaid, model.PayStatusRefunded:
+		return nil
+	case model.PayStatusPaid, model.PayStatusRefunding, model.PayStatusPartialRefunded:
+		remain := eo.PayAmount - eo.RefundedAmount
+		if remain < 0 {
+			remain = 0
+		}
+		refund := amount
+		if refund <= 0 || refund >= remain {
+			refund = remain
+		}
+		if refund <= 0 {
+			if amount > 0 {
+				return fmt.Errorf("%w: no refundable balance", ErrInvalidState)
+			}
+			return nil
+		}
+		refund = roundMoney(refund)
+		res := query.NotDeleted(tx.Model(&model.ErrandOrder{})).
+			Where("id = ? AND pay_status = ? AND refunded_amount = ?", eo.ID, eo.PayStatus, eo.RefundedAmount).
+			Updates(map[string]interface{}{
+				"pay_status": model.PayStatusRefunding,
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return fmt.Errorf("%w: errand %d refund conflict", ErrInvalidState, eo.ID)
+		}
+		refundReason := reason
+		if refundReason == "" {
+			refundReason = "跑腿退款"
+		}
+		return enqueueWeChatRefund(tx, RefundJob{
+			Provider:    p,
+			SubjectType: model.PaySubjectErrand,
+			SubjectID:   eo.ID,
+			OrderNo:     eo.OrderNo,
+			OutRefundNo: fmt.Sprintf("RF%s%d", eo.OrderNo, time.Now().UnixNano()%1e12),
+			PayAmount:   eo.PayAmount,
+			RefundAmt:   refund,
+			Reason:      refundReason,
+		})
 	default:
 		return ErrInvalidState
 	}

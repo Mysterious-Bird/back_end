@@ -183,6 +183,22 @@ func (s *RiderEarningService) toEarningView(e *model.RiderEarning) EarningView {
 			}
 		}
 	}
+	if e.ErrandOrderID != nil {
+		var eo model.ErrandOrder
+		if err := s.DB.Select("id", "order_no", "goods_desc", "pickup_snapshot").First(&eo, *e.ErrandOrderID).Error; err == nil {
+			v.OrderNo = eo.OrderNo
+			desc := []rune(eo.GoodsDesc)
+			if len(desc) > 24 {
+				desc = append(desc[:24], '…')
+			}
+			v.ProductName = "跑腿：" + string(desc)
+			if eo.PickupSnapshot != nil && eo.PickupSnapshot.ShopName != "" {
+				v.ShopName = eo.PickupSnapshot.ShopName
+			} else {
+				v.ShopName = "店外商家"
+			}
+		}
+	}
 	return v
 }
 

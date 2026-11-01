@@ -13,6 +13,7 @@ type RiderEarning struct {
 	RiderID         uint64     `gorm:"not null;index:idx_rider_status,priority:1" json:"rider_id"`
 	DeliveryOrderID uint64     `gorm:"not null;index:idx_delivery" json:"delivery_order_id"`
 	OrderID         *uint64    `json:"order_id,omitempty"`
+	ErrandOrderID   *uint64    `gorm:"column:errand_order_id" json:"errand_order_id,omitempty"`
 	MerchantID      uint64     `gorm:"not null" json:"merchant_id"`
 	Amount          float64    `gorm:"type:decimal(10,2);not null" json:"amount"`
 	Status          uint8      `gorm:"not null;default:0;index:idx_rider_status,priority:2" json:"status"`
