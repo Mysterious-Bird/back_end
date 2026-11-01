@@ -114,6 +114,7 @@ func Setup(cfg *config.Config, db *gorm.DB) *gin.Engine {
 	startPendingPayExpireWorker(orderSvc, takeoutSvc, deliveryFeePaySvc)
 	startRefundRetryWorker(orderSvc)
 	startErrandAutoConfirmWorker(errandSvc)
+	startErrandUnpaidCancelWorker(errandSvc)
 	service.MigrateBagToPendingVerifyIfEnabled(db)
 	paymentHandler := &handler.PaymentHandler{OrderSvc: orderSvc}
 	deliverySvc := &service.DeliveryService{DB: db, InventorySvc: inventorySvc, DeliveryFeePaySvc: deliveryFeePaySvc, ErrandSvc: errandSvc}
@@ -411,6 +412,26 @@ func startErrandAutoConfirmWorker(errandSvc *service.ErrandService) {
 		}
 		run()
 		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			run()
+		}
+	}()
+}
+
+// startErrandUnpaidCancelWorker 跑腿单超时未支付跑腿费自动取消（15 分钟支付窗）。
+func startErrandUnpaidCancelWorker(errandSvc *service.ErrandService) {
+	go func() {
+		run := func() {
+			n, err := errandSvc.CancelUnpaidStale(time.Now())
+			if err != nil {
+				log.Printf("跑腿待支付超时取消部分失败: %v (本批成功 %d)", err, n)
+			} else if n > 0 {
+				log.Printf("跑腿待支付单超时自动取消 %d 笔", n)
+			}
+		}
+		run()
+		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
 			run()

@@ -6,13 +6,14 @@ import (
 
 // 跑腿单状态
 const (
-	ErrandStatusPendingAccept  uint8 = 1 // 待接单（下单即进入，无需预付）
+	ErrandStatusPendingAccept  uint8 = 1 // 待接单（跑腿费已付）
 	ErrandStatusAccepted       uint8 = 2 // 已接单（待取货/代购）
 	ErrandStatusDelivering     uint8 = 3 // 配送中（已取货）
 	ErrandStatusPendingConfirm uint8 = 4 // 待用户确认（已送达并完成收款）
 	ErrandStatusCompleted      uint8 = 5 // 已完成
 	ErrandStatusCancelled      uint8 = 6 // 已取消
 	ErrandStatusException      uint8 = 7 // 异常处理中
+	ErrandStatusPendingPay     uint8 = 8 // 待支付跑腿费（下单即进入，支付成功后才可被接单）
 )
 
 // 跑腿收款方式（送达时确定）
@@ -21,7 +22,7 @@ const (
 	ErrandPayModeCash     uint8 = 2 // 线下现金
 )
 
-// PaySubjectErrand 跑腿单支付主体（送达时平台支付）。
+// PaySubjectErrand 跑腿单支付主体（下单付跑腿费、送达付代购商品费）。
 const PaySubjectErrand = "errand"
 
 // ErrandPickupSnapshot 取货点快照（店外商家，不在平台内）。
@@ -41,6 +42,7 @@ type ErrandOrder struct {
 	AccountID          uint64                `gorm:"not null;index" json:"account_id"`
 	Status             uint8                 `gorm:"not null;default:1;index" json:"status"`
 	PayStatus          uint8                 `gorm:"not null;default:0" json:"pay_status"`
+	GoodsPayStatus     uint8                 `gorm:"column:goods_pay_status;not null;default:0" json:"goods_pay_status"`
 	PayMode            uint8                 `gorm:"not null;default:0" json:"pay_mode"`
 	DeliveryFee        float64               `gorm:"type:decimal(10,2);not null;default:1" json:"delivery_fee"`
 	ItemCount          int                   `gorm:"not null;default:1" json:"item_count"`
@@ -89,6 +91,8 @@ func ErrandStatusText(status uint8) string {
 		return "已取消"
 	case ErrandStatusException:
 		return "异常处理中"
+	case ErrandStatusPendingPay:
+		return "待支付"
 	default:
 		return "未知"
 	}

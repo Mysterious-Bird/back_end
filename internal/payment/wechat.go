@@ -79,7 +79,8 @@ func (p *WeChatProvider) CreatePrepayForSubject(sub PaySubject) (*PrepayResult, 
 	}
 }
 
-// createErrandPrepay 跑腿单送达时平台支付（金额 = 跑腿费 + 代购商品费）。
+// createErrandPrepay 跑腿单平台支付：
+// 待支付状态下支付跑腿费；已接单/配送中且为代购单时支付商品费（支付单号加 G 后缀）。
 func (p *WeChatProvider) createErrandPrepay(sub PaySubject) (*PrepayResult, error) {
 	var eo model.ErrandOrder
 	if err := query.NotDeleted(p.DB).
@@ -90,27 +91,49 @@ func (p *WeChatProvider) createErrandPrepay(sub PaySubject) (*PrepayResult, erro
 		}
 		return nil, err
 	}
-	if eo.Status != model.ErrandStatusAccepted && eo.Status != model.ErrandStatusDelivering {
-		return nil, ErrInvalidState
+	alreadyPaid := &PrepayResult{Provider: p.Name(), AlreadyPaid: true, NeedPay: false, Message: "订单已支付"}
+	description := "雨季新江跑腿费"
+	if IsGoodsOrderNo(sub.OrderNo) {
+		// 代购商品费：仅已接单/配送中可付
+		if eo.Status != model.ErrandStatusAccepted && eo.Status != model.ErrandStatusDelivering {
+			return nil, ErrInvalidState
+		}
+		if eo.GoodsAmount <= 0 {
+			return nil, ErrInvalidState
+		}
+		if eo.GoodsPayStatus == model.PayStatusPaid {
+			return alreadyPaid, nil
+		}
+		if eo.GoodsPayStatus != model.PayStatusUnpaid {
+			return nil, ErrInvalidState
+		}
+		description = "雨季新江跑腿代购"
+	} else {
+		// 跑腿费：仅待支付状态可付
+		if eo.Status != model.ErrandStatusPendingPay {
+			return nil, ErrInvalidState
+		}
+		if eo.PayStatus != model.PayStatusUnpaid {
+			return alreadyPaid, nil
+		}
+		if eo.PayExpireAt != nil && time.Now().After(*eo.PayExpireAt) {
+			return nil, fmt.Errorf("%w: 支付已超时，请重新下单", ErrInvalidState)
+		}
 	}
-	if eo.PayStatus != model.PayStatusUnpaid {
-		return &PrepayResult{Provider: p.Name(), AlreadyPaid: true, NeedPay: false,
-			Message: "订单已支付"}, nil
-	}
-	amount := eo.PayAmount
-	if amount <= 0 {
-		amount = roundMoney(eo.DeliveryFee + eo.GoodsAmount)
-	}
+	amount := roundMoney(sub.Amount)
 	if amount <= 0 {
 		return nil, ErrInvalidState
 	}
 
 	var existingTx model.PaymentTransaction
-	if err := paidTransactionBySubject(p.DB, model.PaySubjectErrand, eo.ID).First(&existingTx).Error; err == nil {
-		return &PrepayResult{Provider: p.Name(), AlreadyPaid: true, NeedPay: false,
-			Message: "订单已支付"}, nil
+	if err := p.DB.
+		Where("subject_type = ? AND subject_id = ? AND order_no = ? AND status IN ?",
+			model.PaySubjectErrand, eo.ID, sub.OrderNo,
+			[]uint8{model.PayTxStatusPaid, model.PayTxStatusRefunded}).
+		First(&existingTx).Error; err == nil {
+		return alreadyPaid, nil
 	}
-	if reused, err := p.reuseOpenPrepay(model.PaySubjectErrand, eo.ID, eo.OrderNo, eo.PayExpireAt); err != nil {
+	if reused, err := p.reuseOpenPrepay(model.PaySubjectErrand, eo.ID, sub.OrderNo, eo.PayExpireAt); err != nil {
 		return nil, err
 	} else if reused != nil {
 		return reused, nil
@@ -131,8 +154,8 @@ func (p *WeChatProvider) createErrandPrepay(sub PaySubject) (*PrepayResult, erro
 	prepayResp, err := p.Client.CreateJSAPIPrepay(&wechatv3.CreateJSAPIPrepayRequest{
 		AppID:       p.AppID,
 		MchID:       p.MchID,
-		Description: "雨季新江跑腿",
-		OutTradeNo:  eo.OrderNo,
+		Description: description,
+		OutTradeNo:  sub.OrderNo,
 		NotifyURL:   p.NotifyURL,
 		Amount: wechatv3.PrepayAmount{
 			Total:    wechatv3.YuanToFen(amount),
@@ -152,7 +175,7 @@ func (p *WeChatProvider) createErrandPrepay(sub PaySubject) (*PrepayResult, erro
 		SubjectType: model.PaySubjectErrand,
 		SubjectID:   eo.ID,
 		OrderID:     0,
-		OrderNo:     eo.OrderNo,
+		OrderNo:     sub.OrderNo,
 		PrepayID:    &prepayID,
 		PayAmount:   amount,
 		Status:      model.PayTxStatusPrepay,
@@ -558,7 +581,9 @@ func (p *WeChatProvider) handlePaySuccess(data []byte) (*NotifyResult, error) {
 	}
 
 	var result NotifyResult
+	var refundJobs []RefundJob
 	err = p.DB.Transaction(func(tx *gorm.DB) error {
+		AttachRefundCollector(tx, &refundJobs)
 		sub, err := ResolveSubjectByOrderNo(tx, notify.OutTradeNo)
 		if err != nil {
 			return err
@@ -598,6 +623,7 @@ func (p *WeChatProvider) handlePaySuccess(data []byte) (*NotifyResult, error) {
 		}
 		return nil, err
 	}
+	DispatchRefundJobs(refundJobs)
 
 	return &result, nil
 }
@@ -748,45 +774,175 @@ func (p *WeChatProvider) markSubjectPaidInTx(tx *gorm.DB, sub PaySubject, at tim
 		}
 		return nil
 	case model.PaySubjectErrand:
-		res := query.NotDeleted(tx.Model(&model.ErrandOrder{})).
-			Where("id = ? AND pay_status = ?", sub.ID, model.PayStatusUnpaid).
+		if IsGoodsOrderNo(sub.OrderNo) {
+			return p.settleErrandGoodsPaidInTx(tx, sub, at)
+		}
+		return p.settleErrandFeePaidInTx(tx, sub, at)
+	default:
+		return ErrInvalidState
+	}
+}
+
+// settleErrandFeePaidInTx 跑腿费支付成功：待支付单解锁为待接单并创建配送单；
+// 旧「0 元下单」订单视为送达收款完成；已取消订单自动退款。
+func (p *WeChatProvider) settleErrandFeePaidInTx(tx *gorm.DB, sub PaySubject, at time.Time) error {
+	var eo model.ErrandOrder
+	if err := query.NotDeleted(tx.Clauses(clause.Locking{Strength: "UPDATE"})).
+		Select("id", "status", "pay_status", "pay_amount", "delivery_fee", "goods_amount", "delivery_order_id").
+		First(&eo, sub.ID).Error; err != nil {
+		return err
+	}
+	if eo.PayStatus == model.PayStatusPaid {
+		return nil
+	}
+	if eo.PayStatus != model.PayStatusUnpaid {
+		return ErrInvalidState
+	}
+	if eo.Status == model.ErrandStatusCancelled {
+		// 订单已取消/超时关闭后支付成功：按资金优先自动全额退款
+		if err := query.NotDeleted(tx.Model(&model.ErrandOrder{})).
+			Where("id = ? AND pay_status = ?", eo.ID, model.PayStatusUnpaid).
 			Updates(map[string]interface{}{
 				"pay_status": model.PayStatusPaid,
 				"paid_at":    at,
-				"status":     model.ErrandStatusPendingConfirm,
-			})
-		if res.Error != nil {
-			return res.Error
+			}).Error; err != nil {
+			return err
 		}
-		if res.RowsAffected == 0 {
-			var eo model.ErrandOrder
-			if err := query.NotDeleted(tx).Select("pay_status").First(&eo, sub.ID).Error; err != nil {
-				return err
-			}
-			if eo.PayStatus != model.PayStatusPaid {
-				return ErrInvalidState
-			}
-			return nil
+		if err := p.refundErrandAmountInTx(tx, sub, sub.Amount, "订单已取消，支付款自动退回"); err != nil {
+			return err
 		}
-		// 支付成功即视为送达完成，推进配送子单为「待确认收货」
-		_ = tx.Model(&model.DeliveryOrder{}).
-			Where("errand_order_id = ? AND status IN ?", sub.ID,
-				[]int{int(model.DeliveryAccepted), int(model.DeliveryPicking), int(model.DeliveryDelivering)}).
-			Updates(map[string]interface{}{"status": model.DeliveryDelivered, "delivered_at": at})
 		detail, _ := json.Marshal(map[string]interface{}{"amount": sub.Amount})
 		_ = tx.Create(&model.FulfillmentEvent{
 			SubjectType: model.FulfillmentSubjectErrand,
-			SubjectID:   sub.ID,
-			EventCode:   model.EventPaid,
-			ActorRole:   model.FulfillmentActorUser,
-			Title:       "平台支付成功",
+			SubjectID:   eo.ID,
+			EventCode:   "auto_refund",
+			ActorRole:   model.FulfillmentActorSystem,
+			Title:       "订单已取消，支付款自动退款",
 			Detail:      detail,
 			CreatedAt:   at,
 		}).Error
 		return nil
-	default:
+	}
+	if eo.Status == model.ErrandStatusPendingPay {
+		delivery := model.DeliveryOrder{
+			ErrandOrderID: &eo.ID,
+			Status:        model.DeliveryPendingAccept,
+		}
+		if err := tx.Create(&delivery).Error; err != nil {
+			return err
+		}
+		if err := query.NotDeleted(tx.Model(&model.ErrandOrder{})).
+			Where("id = ? AND pay_status = ?", eo.ID, model.PayStatusUnpaid).
+			Updates(map[string]interface{}{
+				"pay_status":        model.PayStatusPaid,
+				"paid_at":           at,
+				"status":            model.ErrandStatusPendingAccept,
+				"pay_expire_at":     nil,
+				"delivery_order_id": delivery.ID,
+			}).Error; err != nil {
+			return err
+		}
+		detail, _ := json.Marshal(map[string]interface{}{"amount": sub.Amount})
+		_ = tx.Create(&model.FulfillmentEvent{
+			SubjectType: model.FulfillmentSubjectErrand,
+			SubjectID:   eo.ID,
+			EventCode:   model.EventPaid,
+			ActorRole:   model.FulfillmentActorUser,
+			Title:       "跑腿费支付成功，等待骑手接单",
+			Detail:      detail,
+			CreatedAt:   at,
+		}).Error
+		return nil
+	}
+	// 旧流程：送达时一次性付清跑腿费 + 商品费
+	res := query.NotDeleted(tx.Model(&model.ErrandOrder{})).
+		Where("id = ? AND pay_status = ?", eo.ID, model.PayStatusUnpaid).
+		Updates(map[string]interface{}{
+			"pay_status":    model.PayStatusPaid,
+			"paid_at":       at,
+			"status":        model.ErrandStatusPendingConfirm,
+			"pay_expire_at": nil,
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		var cur model.ErrandOrder
+		if err := query.NotDeleted(tx).Select("pay_status").First(&cur, eo.ID).Error; err != nil {
+			return err
+		}
+		if cur.PayStatus != model.PayStatusPaid {
+			return ErrInvalidState
+		}
+		return nil
+	}
+	_ = tx.Model(&model.DeliveryOrder{}).
+		Where("errand_order_id = ? AND status IN ?", eo.ID,
+			[]int{int(model.DeliveryAccepted), int(model.DeliveryPicking), int(model.DeliveryDelivering)}).
+		Updates(map[string]interface{}{"status": model.DeliveryDelivered, "delivered_at": at})
+	detail, _ := json.Marshal(map[string]interface{}{"amount": sub.Amount})
+	_ = tx.Create(&model.FulfillmentEvent{
+		SubjectType: model.FulfillmentSubjectErrand,
+		SubjectID:   eo.ID,
+		EventCode:   model.EventPaid,
+		ActorRole:   model.FulfillmentActorUser,
+		Title:       "平台支付成功",
+		Detail:      detail,
+		CreatedAt:   at,
+	}).Error
+	return nil
+}
+
+// settleErrandGoodsPaidInTx 代购商品费支付成功：订单进入待确认，配送单标记送达。
+func (p *WeChatProvider) settleErrandGoodsPaidInTx(tx *gorm.DB, sub PaySubject, at time.Time) error {
+	var eo model.ErrandOrder
+	if err := query.NotDeleted(tx.Clauses(clause.Locking{Strength: "UPDATE"})).
+		Select("id", "status", "goods_pay_status", "goods_amount", "delivery_order_id").
+		First(&eo, sub.ID).Error; err != nil {
+		return err
+	}
+	if eo.GoodsPayStatus == model.PayStatusPaid {
+		return nil
+	}
+	if eo.GoodsPayStatus != model.PayStatusUnpaid {
 		return ErrInvalidState
 	}
+	res := query.NotDeleted(tx.Model(&model.ErrandOrder{})).
+		Where("id = ? AND goods_pay_status = ?", eo.ID, model.PayStatusUnpaid).
+		Updates(map[string]interface{}{
+			"goods_pay_status": model.PayStatusPaid,
+			"pay_mode":         model.ErrandPayModePlatform,
+			"status":           model.ErrandStatusPendingConfirm,
+			"pay_expire_at":    nil,
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		var cur model.ErrandOrder
+		if err := query.NotDeleted(tx).Select("goods_pay_status").First(&cur, eo.ID).Error; err != nil {
+			return err
+		}
+		if cur.GoodsPayStatus != model.PayStatusPaid {
+			return ErrInvalidState
+		}
+		return nil
+	}
+	_ = tx.Model(&model.DeliveryOrder{}).
+		Where("errand_order_id = ? AND status IN ?", eo.ID,
+			[]int{int(model.DeliveryAccepted), int(model.DeliveryPicking), int(model.DeliveryDelivering)}).
+		Updates(map[string]interface{}{"status": model.DeliveryDelivered, "delivered_at": at})
+	detail, _ := json.Marshal(map[string]interface{}{"amount": sub.Amount})
+	_ = tx.Create(&model.FulfillmentEvent{
+		SubjectType: model.FulfillmentSubjectErrand,
+		SubjectID:   eo.ID,
+		EventCode:   model.EventPaid,
+		ActorRole:   model.FulfillmentActorUser,
+		Title:       "商品费支付成功",
+		Detail:      detail,
+		CreatedAt:   at,
+	}).Error
+	return nil
 }
 
 func (p *WeChatProvider) invokeSubjectPaidCallback(tx *gorm.DB, sub PaySubject) error {
@@ -1113,13 +1269,23 @@ func (p *WeChatProvider) refundErrandAmountInTx(tx *gorm.DB, sub PaySubject, amo
 		if refundReason == "" {
 			refundReason = "跑腿退款"
 		}
+		orderNo := sub.OrderNo
+		if orderNo == "" {
+			orderNo = eo.OrderNo
+		}
+		// 微信退款单的 Total 必须等于该 out_trade_no 的原支付金额：
+		// 跑腿费与商品费各自独立支付，按 sub.Amount 传入。
+		totalForJob := roundMoney(sub.Amount)
+		if totalForJob <= 0 {
+			totalForJob = eo.PayAmount
+		}
 		return enqueueWeChatRefund(tx, RefundJob{
 			Provider:    p,
 			SubjectType: model.PaySubjectErrand,
 			SubjectID:   eo.ID,
-			OrderNo:     eo.OrderNo,
-			OutRefundNo: fmt.Sprintf("RF%s%d", eo.OrderNo, time.Now().UnixNano()%1e12),
-			PayAmount:   eo.PayAmount,
+			OrderNo:     orderNo,
+			OutRefundNo: fmt.Sprintf("RF%s%d", orderNo, time.Now().UnixNano()%1e12),
+			PayAmount:   totalForJob,
 			RefundAmt:   refund,
 			Reason:      refundReason,
 		})
@@ -1387,6 +1553,10 @@ func (p *WeChatProvider) reuseOpenPrepay(subjectType string, subjectID uint64, o
 			subjectType, subjectID, subjectID)
 	} else {
 		q = q.Where("subject_type = ? AND subject_id = ?", subjectType, subjectID)
+		// 跑腿单存在两笔支付（跑腿费/商品费），按支付单号区分
+		if subjectType == model.PaySubjectErrand {
+			q = q.Where("order_no = ?", orderNo)
+		}
 	}
 	err := q.Order("id DESC").First(&existing).Error
 	if err == nil && existing.PrepayID != nil && *existing.PrepayID != "" {
@@ -1407,6 +1577,9 @@ func (p *WeChatProvider) invalidateOpenPrepay(subjectType string, subjectID uint
 			subjectType, subjectID, subjectID)
 	} else {
 		q = q.Where("subject_type = ? AND subject_id = ?", subjectType, subjectID)
+		if subjectType == model.PaySubjectErrand {
+			q = q.Where("order_no = ?", orderNo)
+		}
 	}
 	if err := q.Update("status", model.PayTxStatusFailed).Error; err != nil {
 		return err

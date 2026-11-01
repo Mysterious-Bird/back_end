@@ -68,13 +68,24 @@ func TestErrandFlow_Cash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if view.Status != model.ErrandStatusPendingAccept {
-		t.Fatalf("status want pending accept, got %d", view.Status)
+	if view.Status != model.ErrandStatusPendingPay {
+		t.Fatalf("status want pending pay, got %d", view.Status)
+	}
+	if view.DeliveryOrderID != nil {
+		t.Fatal("delivery order should not exist before fee paid")
+	}
+	// 先付跑腿费：支付成功后才创建配送单并进入待接单池
+	if _, err := svc.CreatePrepay(accountID, view.ID); err != nil {
+		t.Fatalf("prepay fee: %v", err)
+	}
+	view, err = svc.Get(accountID, view.ID)
+	if err != nil {
+		t.Fatalf("get after pay: %v", err)
+	}
+	if view.Status != model.ErrandStatusPendingAccept || view.DeliveryOrderID == nil {
+		t.Fatalf("after pay status=%d delivery=%v", view.Status, view.DeliveryOrderID)
 	}
 	deliveryID := view.DeliveryOrderID
-	if deliveryID == nil {
-		t.Fatal("delivery order not created")
-	}
 
 	if _, err := dsvc.Accept(riderID, *deliveryID); err != nil {
 		t.Fatalf("accept: %v", err)
@@ -104,7 +115,7 @@ func TestErrandFlow_Cash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("complete cash: %v", err)
 	}
-	if got.Status != model.ErrandStatusPendingConfirm || got.CollectedAmount != 9.5 {
+	if got.Status != model.ErrandStatusPendingConfirm || got.CollectedAmount != 8.5 {
 		t.Fatalf("after cash status=%d collected=%v", got.Status, got.CollectedAmount)
 	}
 
@@ -133,6 +144,13 @@ func TestErrandFlow_VoucherNoGoodsAmount(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.CreatePrepay(101, view.ID); err != nil {
+		t.Fatalf("prepay fee: %v", err)
+	}
+	view, err = svc.Get(101, view.ID)
+	if err != nil {
+		t.Fatalf("get after pay: %v", err)
 	}
 	if _, err := dsvc.Accept(riderID, *view.DeliveryOrderID); err != nil {
 		t.Fatalf("accept: %v", err)
@@ -171,12 +189,105 @@ func TestErrandCancelBeforeAccept(t *testing.T) {
 	if got.Status != model.ErrandStatusCancelled {
 		t.Fatalf("status want cancelled, got %d", got.Status)
 	}
-	var d model.DeliveryOrder
-	if err := db.First(&d, *view.DeliveryOrderID).Error; err != nil {
+	// 未支付时不存在配送单，也不应有骑手可见
+	var cnt int64
+	if err := db.Model(&model.DeliveryOrder{}).Where("errand_order_id = ?", view.ID).Count(&cnt).Error; err != nil {
 		t.Fatal(err)
 	}
-	if d.Status != model.DeliveryCancelled {
-		t.Fatalf("delivery status want cancelled, got %d", d.Status)
+	if cnt != 0 {
+		t.Fatalf("delivery order want 0, got %d", cnt)
+	}
+}
+
+func TestErrandCancelAfterPayRefundsFee(t *testing.T) {
+	db, svc, _, _ := newErrandFixture(t)
+	view, err := svc.Create(107, ErrandCreateInput{
+		PickupAddress: "取货路", ContactName: "钱八", ContactPhone: "13400000000",
+		Detail: "收货路", GoodsDesc: "文件",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.CreatePrepay(107, view.ID); err != nil {
+		t.Fatalf("prepay fee: %v", err)
+	}
+	if _, err := svc.Cancel(107, view.ID, "不要了"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	var eo model.ErrandOrder
+	if err := db.First(&eo, view.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if eo.Status != model.ErrandStatusCancelled {
+		t.Fatalf("status want cancelled, got %d", eo.Status)
+	}
+	if eo.RefundedAmount != 1 || eo.PayStatus != model.PayStatusRefunded {
+		t.Fatalf("refund want 1/refunded, got refunded=%v pay_status=%d", eo.RefundedAmount, eo.PayStatus)
+	}
+}
+
+func TestErrandUnpaidStaleCancel(t *testing.T) {
+	db, svc, _, _ := newErrandFixture(t)
+	view, err := svc.Create(105, ErrandCreateInput{
+		PickupAddress: "取货路", ContactName: "周九", ContactPhone: "13300000000",
+		Detail: "收货路", GoodsDesc: "文件",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Minute)
+	if err := db.Model(&model.ErrandOrder{}).Where("id = ?", view.ID).
+		Update("pay_expire_at", past).Error; err != nil {
+		t.Fatal(err)
+	}
+	n, err := svc.CancelUnpaidStale(time.Now())
+	if err != nil {
+		t.Fatalf("stale cancel: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("stale cancel count want 1, got %d", n)
+	}
+	var eo model.ErrandOrder
+	_ = db.First(&eo, view.ID).Error
+	if eo.Status != model.ErrandStatusCancelled {
+		t.Fatalf("status want cancelled, got %d", eo.Status)
+	}
+}
+
+func TestErrandGoodsPrepay(t *testing.T) {
+	db, svc, dsvc, riderID := newErrandFixture(t)
+	view, err := svc.Create(106, ErrandCreateInput{
+		PickupAddress: "取货路", ContactName: "吴十", ContactPhone: "13200000000",
+		Detail: "收货路", GoodsDesc: "水果", ItemCount: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.DeliveryFee != 2 {
+		t.Fatalf("fee want 2, got %v", view.DeliveryFee)
+	}
+	if _, err := svc.CreatePrepay(106, view.ID); err != nil {
+		t.Fatalf("prepay fee: %v", err)
+	}
+	view, err = svc.Get(106, view.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dsvc.Accept(riderID, *view.DeliveryOrderID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RiderPickup(riderID, view.ID, 8.5, []string{"receipt.jpg"}); err != nil {
+		t.Fatalf("pickup: %v", err)
+	}
+	if _, err := svc.CreatePrepay(106, view.ID); err != nil {
+		t.Fatalf("prepay goods: %v", err)
+	}
+	var eo model.ErrandOrder
+	if err := db.First(&eo, view.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if eo.GoodsPayStatus != model.PayStatusPaid || eo.Status != model.ErrandStatusPendingConfirm {
+		t.Fatalf("after goods pay goods_pay_status=%d status=%d", eo.GoodsPayStatus, eo.Status)
 	}
 }
 
@@ -186,6 +297,13 @@ func TestErrandAutoConfirm(t *testing.T) {
 		PickupAddress: "取货路", ContactName: "赵六", ContactPhone: "13600000000",
 		Detail: "收货路", GoodsDesc: "药品", VoucherCode: "V123",
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreatePrepay(103, view.ID); err != nil {
+		t.Fatalf("prepay fee: %v", err)
+	}
+	view, err = svc.Get(103, view.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

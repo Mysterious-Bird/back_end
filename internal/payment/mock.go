@@ -43,18 +43,85 @@ func (p *MockProvider) SettleSubjectPaidInTx(tx *gorm.DB, sub PaySubject, at tim
 	case model.PaySubjectDeliveryFee:
 		return p.settleDeliveryFeePaidInTx(tx, sub.ID, at)
 	case model.PaySubjectErrand:
-		return p.settleErrandPaidInTx(tx, sub.ID, at)
+		return p.settleErrandPaidInTx(tx, sub, at)
 	default:
 		return ErrInvalidState
 	}
 }
 
-func (p *MockProvider) settleErrandPaidInTx(tx *gorm.DB, errandID uint64, at time.Time) error {
-	if errandID == 0 {
+// settleErrandPaidInTx 跑腿支付结算：
+// 跑腿费（默认单号）→ 待支付单解锁为待接单并创建配送单；商品费（G 后缀）→ 订单待确认；
+// 旧「0 元下单」订单（已接单/配送中）→ 一次付清后待确认。
+func (p *MockProvider) settleErrandPaidInTx(tx *gorm.DB, sub PaySubject, at time.Time) error {
+	if sub.ID == 0 {
 		return ErrInvalidState
 	}
+	var eo model.ErrandOrder
+	if err := query.NotDeleted(tx.Clauses(clause.Locking{Strength: "UPDATE"})).
+		Select("id", "status", "pay_status", "goods_pay_status", "goods_amount", "pay_amount", "delivery_fee").
+		First(&eo, sub.ID).Error; err != nil {
+		return err
+	}
+	if IsGoodsOrderNo(sub.OrderNo) {
+		if eo.GoodsPayStatus == model.PayStatusPaid {
+			return nil
+		}
+		if eo.GoodsPayStatus != model.PayStatusUnpaid {
+			return ErrInvalidState
+		}
+		res := query.NotDeleted(tx.Model(&model.ErrandOrder{})).
+			Where("id = ? AND goods_pay_status = ?", eo.ID, model.PayStatusUnpaid).
+			Updates(map[string]interface{}{
+				"goods_pay_status": model.PayStatusPaid,
+				"pay_mode":         model.ErrandPayModePlatform,
+				"status":           model.ErrandStatusPendingConfirm,
+				"pay_expire_at":    nil,
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrInvalidState
+		}
+		_ = tx.Model(&model.DeliveryOrder{}).
+			Where("errand_order_id = ? AND status IN ?", eo.ID,
+				[]int{int(model.DeliveryAccepted), int(model.DeliveryPicking), int(model.DeliveryDelivering)}).
+			Updates(map[string]interface{}{"status": model.DeliveryDelivered, "delivered_at": at})
+		return nil
+	}
+	if eo.PayStatus == model.PayStatusPaid {
+		return nil
+	}
+	if eo.PayStatus != model.PayStatusUnpaid {
+		return ErrInvalidState
+	}
+	if eo.Status == model.ErrandStatusPendingPay {
+		delivery := model.DeliveryOrder{
+			ErrandOrderID: &eo.ID,
+			Status:        model.DeliveryPendingAccept,
+		}
+		if err := tx.Create(&delivery).Error; err != nil {
+			return err
+		}
+		res := query.NotDeleted(tx.Model(&model.ErrandOrder{})).
+			Where("id = ? AND pay_status = ?", eo.ID, model.PayStatusUnpaid).
+			Updates(map[string]interface{}{
+				"pay_status":        model.PayStatusPaid,
+				"paid_at":           at,
+				"status":            model.ErrandStatusPendingAccept,
+				"pay_expire_at":     nil,
+				"delivery_order_id": delivery.ID,
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrInvalidState
+		}
+		return nil
+	}
 	res := query.NotDeleted(tx.Model(&model.ErrandOrder{})).
-		Where("id = ? AND pay_status = ?", errandID, model.PayStatusUnpaid).
+		Where("id = ? AND pay_status = ?", eo.ID, model.PayStatusUnpaid).
 		Updates(map[string]interface{}{
 			"pay_status": model.PayStatusPaid,
 			"paid_at":    at,
@@ -64,17 +131,10 @@ func (p *MockProvider) settleErrandPaidInTx(tx *gorm.DB, errandID uint64, at tim
 		return res.Error
 	}
 	if res.RowsAffected == 0 {
-		var eo model.ErrandOrder
-		if err := query.NotDeleted(tx).Select("pay_status").First(&eo, errandID).Error; err != nil {
-			return err
-		}
-		if eo.PayStatus == model.PayStatusPaid {
-			return nil
-		}
 		return ErrInvalidState
 	}
 	_ = tx.Model(&model.DeliveryOrder{}).
-		Where("errand_order_id = ? AND status IN ?", errandID,
+		Where("errand_order_id = ? AND status IN ?", eo.ID,
 			[]int{int(model.DeliveryAccepted), int(model.DeliveryPicking), int(model.DeliveryDelivering)}).
 		Updates(map[string]interface{}{"status": model.DeliveryDelivered, "delivered_at": at})
 	return nil
@@ -340,25 +400,38 @@ func (p *MockProvider) createErrandPrepay(sub PaySubject) (*PrepayResult, error)
 		First(&eo).Error; err != nil {
 		return nil, err
 	}
-	if eo.PayStatus == model.PayStatusPaid {
-		return &PrepayResult{
-			Provider: p.Name(), AlreadyPaid: true, NeedPay: false,
-			Message: "模拟支付已结算",
-		}, nil
+	settled := &PrepayResult{
+		Provider: p.Name(), AlreadyPaid: true, NeedPay: false,
+		Message: "模拟支付已结算",
 	}
-	if eo.PayStatus != model.PayStatusUnpaid {
-		return nil, ErrInvalidState
+	if IsGoodsOrderNo(sub.OrderNo) {
+		if eo.GoodsPayStatus == model.PayStatusPaid {
+			return settled, nil
+		}
+		if eo.GoodsPayStatus != model.PayStatusUnpaid || eo.GoodsAmount <= 0 {
+			return nil, ErrInvalidState
+		}
+	} else {
+		if eo.PayStatus == model.PayStatusPaid {
+			return settled, nil
+		}
+		if eo.PayStatus != model.PayStatusUnpaid {
+			return nil, ErrInvalidState
+		}
+		// 仅待支付单或旧流程（已接单/配送中，送达收款）可支付跑腿费
+		if eo.Status != model.ErrandStatusPendingPay &&
+			eo.Status != model.ErrandStatusAccepted &&
+			eo.Status != model.ErrandStatusDelivering {
+			return nil, ErrInvalidState
+		}
 	}
 	now := time.Now()
 	if err := p.DB.Transaction(func(tx *gorm.DB) error {
-		return p.settleErrandPaidInTx(tx, eo.ID, now)
+		return p.settleErrandPaidInTx(tx, sub, now)
 	}); err != nil {
 		return nil, err
 	}
-	return &PrepayResult{
-		Provider: p.Name(), AlreadyPaid: true, NeedPay: false,
-		Message: "模拟支付已结算",
-	}, nil
+	return settled, nil
 }
 
 func (p *MockProvider) createOrderPrepay(sub PaySubject) (*PrepayResult, error) {

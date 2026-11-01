@@ -63,8 +63,9 @@ type ErrandView struct {
 	DeliveryID   *uint64 `json:"delivery_id,omitempty"`
 	DeliveryStatus uint8 `json:"delivery_status,omitempty"`
 	DeliveryStatusText string `json:"delivery_status_text,omitempty"`
-	// 用户端待支付提示
-	NeedPay bool `json:"need_pay"`
+	// 用户端待支付提示：NeedPay=待付跑腿费，NeedGoodsPay=待付代购商品费
+	NeedPay      bool `json:"need_pay"`
+	NeedGoodsPay bool `json:"need_goods_pay"`
 }
 
 // errandFeeByCount 按件计费：2 件以内按基础价，第 3 件起每件加 1 元。
@@ -78,6 +79,9 @@ func errandFeeByCount(base float64, itemCount int) float64 {
 	}
 	return roundMoney(base + float64(extra))
 }
+
+// ErrandPayTimeout 下单后支付跑腿费的时限。
+const ErrandPayTimeout = 15 * time.Minute
 
 func genErrandOrderNo() string {
 	b := make([]byte, 5)
@@ -188,12 +192,15 @@ func (s *ErrandService) Create(accountID uint64, in ErrandCreateInput) (*ErrandV
 
 	var out *ErrandView
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
+		payExpire := time.Now().Add(ErrandPayTimeout)
 		eo := model.ErrandOrder{
 			OrderNo:     genErrandOrderNo(),
 			AccountID:   accountID,
-			Status:      model.ErrandStatusPendingAccept,
+			Status:      model.ErrandStatusPendingPay,
 			PayStatus:   model.PayStatusUnpaid,
 			DeliveryFee: errandFeeByCount(settings.DeliveryFee, in.ItemCount),
+			PayAmount:   errandFeeByCount(settings.DeliveryFee, in.ItemCount),
+			PayExpireAt: &payExpire,
 			ItemCount:   in.ItemCount,
 			GoodsDesc:   in.GoodsDesc,
 			GoodsPhotos: in.GoodsPhotos,
@@ -218,23 +225,14 @@ func (s *ErrandService) Create(accountID uint64, in ErrandCreateInput) (*ErrandV
 		if err := tx.Create(&eo).Error; err != nil {
 			return err
 		}
-		delivery := model.DeliveryOrder{
-			ErrandOrderID: &eo.ID,
-			Status:        model.DeliveryPendingAccept,
-		}
-		if err := tx.Create(&delivery).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&eo).Update("delivery_order_id", delivery.ID).Error; err != nil {
-			return err
-		}
+		// 先付跑腿费：支付成功后才创建配送单并进入骑手待接单池（见 payment 结算回调）。
 		AppendFulfillmentEventInTx(tx, FulfillmentEventInput{
 			SubjectType: model.FulfillmentSubjectErrand,
 			SubjectID:   eo.ID,
 			EventCode:   model.EventCreated,
 			ActorRole:   model.FulfillmentActorUser,
-			Title:       "跑腿订单已创建",
-			Detail:      map[string]interface{}{"goods": eo.GoodsDesc},
+			Title:       "跑腿订单已创建，待支付跑腿费",
+			Detail:      map[string]interface{}{"goods": eo.GoodsDesc, "delivery_fee": eo.DeliveryFee},
 		})
 		out = s.buildView(tx, eo)
 		return nil
@@ -247,10 +245,11 @@ func (s *ErrandService) Create(accountID uint64, in ErrandCreateInput) (*ErrandV
 
 func (s *ErrandService) buildView(db *gorm.DB, eo model.ErrandOrder) *ErrandView {
 	view := &ErrandView{ErrandOrder: eo, StatusText: model.ErrandStatusText(eo.Status)}
-	view.NeedPay = eo.PayStatus == model.PayStatusUnpaid
-	if eo.PayMode != 0 && eo.PayStatus != model.PayStatusUnpaid {
-		view.NeedPay = false
-	}
+	view.NeedPay = eo.Status == model.ErrandStatusPendingPay && eo.PayStatus == model.PayStatusUnpaid
+	view.NeedGoodsPay = eo.PayMode == model.ErrandPayModePlatform &&
+		eo.GoodsPayStatus == model.PayStatusUnpaid &&
+		eo.GoodsAmount > 0 &&
+		(eo.Status == model.ErrandStatusAccepted || eo.Status == model.ErrandStatusDelivering)
 	if eo.DeliveryOrderID != nil {
 		view.DeliveryID = eo.DeliveryOrderID
 		var d model.DeliveryOrder
@@ -326,7 +325,9 @@ func (s *ErrandService) Get(accountID, id uint64) (*ErrandView, error) {
 // Cancel 用户取消：接单前/接单后未取货可免费取消（未收款不涉及退款）。
 func (s *ErrandService) Cancel(accountID, id uint64, reason string) (*ErrandView, error) {
 	var out *ErrandView
+	var jobs []payment.RefundJob
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
+		payment.AttachRefundCollector(tx, &jobs)
 		var eo model.ErrandOrder
 		if err := query.NotDeleted(tx.Clauses(clause.Locking{Strength: "UPDATE"})).
 			Where("id = ? AND account_id = ?", id, accountID).First(&eo).Error; err != nil {
@@ -335,11 +336,23 @@ func (s *ErrandService) Cancel(accountID, id uint64, reason string) (*ErrandView
 			}
 			return err
 		}
-		if eo.Status != model.ErrandStatusPendingAccept && eo.Status != model.ErrandStatusAccepted {
+		if eo.Status != model.ErrandStatusPendingPay &&
+			eo.Status != model.ErrandStatusPendingAccept &&
+			eo.Status != model.ErrandStatusAccepted {
 			return fmt.Errorf("%w: 当前状态不可取消，请联系客服", ErrErrandStatusInvalid)
 		}
-		if eo.PayStatus != model.PayStatusUnpaid {
-			return fmt.Errorf("%w: 已付款订单请联系客服", ErrErrandStatusInvalid)
+		// 已支付跑腿费的订单取消：全额退回跑腿费（未取货前可免费取消）。
+		if eo.PayStatus == model.PayStatusPaid && eo.DeliveryFee > 0 {
+			sub := payment.PaySubject{
+				Type:      model.PaySubjectErrand,
+				ID:        eo.ID,
+				OrderNo:   eo.OrderNo,
+				Amount:    eo.DeliveryFee,
+				AccountID: eo.AccountID,
+			}
+			if err := s.paymentProvider().RefundSubjectAmountInTx(tx, sub, eo.DeliveryFee, "用户取消跑腿退还跑腿费"); err != nil {
+				return err
+			}
 		}
 		reasonText := strings.TrimSpace(reason)
 		if reasonText == "" {
@@ -375,7 +388,50 @@ func (s *ErrandService) Cancel(accountID, id uint64, reason string) (*ErrandView
 	if err != nil {
 		return nil, err
 	}
+	payment.DispatchRefundJobs(jobs)
 	return out, nil
+}
+
+// CancelUnpaidStale 超时未支付跑腿费的订单自动取消（不影响旧「0 元下单」订单）。
+func (s *ErrandService) CancelUnpaidStale(now time.Time) (int, error) {
+	var orders []model.ErrandOrder
+	if err := query.NotDeleted(s.DB).
+		Where("status = ? AND pay_status = ? AND pay_expire_at IS NOT NULL AND pay_expire_at < ?",
+			model.ErrandStatusPendingPay, model.PayStatusUnpaid, now).
+		Limit(200).Find(&orders).Error; err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, eo := range orders {
+		err := s.DB.Transaction(func(tx *gorm.DB) error {
+			res := query.NotDeleted(tx.Model(&model.ErrandOrder{})).
+				Where("id = ? AND status = ? AND pay_status = ?",
+					eo.ID, model.ErrandStatusPendingPay, model.PayStatusUnpaid).
+				Updates(map[string]interface{}{
+					"status":        model.ErrandStatusCancelled,
+					"cancel_reason": "超时未支付，系统自动取消",
+				})
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected == 0 {
+				return nil
+			}
+			AppendFulfillmentEventInTx(tx, FulfillmentEventInput{
+				SubjectType: model.FulfillmentSubjectErrand,
+				SubjectID:   eo.ID,
+				EventCode:   model.EventCancelled,
+				ActorRole:   model.FulfillmentActorSystem,
+				Title:       "超时未支付，订单自动取消",
+			})
+			n++
+			return nil
+		})
+		if err != nil {
+			return n, err
+		}
+	}
+	return n, nil
 }
 
 // RiderPickup 骑手取货：无券码时代购，需录入实报商品费并上传小票。
@@ -495,10 +551,17 @@ func (s *ErrandService) RiderComplete(riderID, id uint64, payMode uint8) (*Erran
 		if d.RiderID == nil || *d.RiderID != riderID {
 			return ErrErrandUnauthorized
 		}
-		payAmount := roundMoney(eo.DeliveryFee + eo.GoodsAmount)
+		// 先付跑腿费后：送达时只收代购商品费；券码单无商品费，送达即完成收款。
+		legacy := eo.PayStatus == model.PayStatusUnpaid
+		goods := roundMoney(eo.GoodsAmount)
+		payAmount := roundMoney(eo.DeliveryFee + goods)
 		switch payMode {
 		case model.ErrandPayModePlatform:
-			if eo.PayStatus == model.PayStatusUnpaid {
+			if legacy || goods > 0 {
+				amount := goods
+				if legacy {
+					amount = payAmount
+				}
 				expire := time.Now().Add(10 * time.Minute)
 				if err := tx.Model(&eo).Updates(map[string]interface{}{
 					"pay_mode":      model.ErrandPayModePlatform,
@@ -516,21 +579,56 @@ func (s *ErrandService) RiderComplete(riderID, id uint64, payMode uint8) (*Erran
 					EventCode:   "pay_requested",
 					ActorRole:   model.FulfillmentActorRider,
 					ActorID:     &riderID,
-					Title:       "等待用户平台支付",
-					Detail:      map[string]interface{}{"amount": payAmount},
+					Title:       "等待用户平台支付商品费",
+					Detail:      map[string]interface{}{"amount": amount},
 				})
+			} else {
+				// 券码单：跑腿费已在线支付，无商品费，直接送达
+				now := time.Now()
+				if err := tx.Model(&eo).Updates(map[string]interface{}{
+					"pay_mode":      model.ErrandPayModePlatform,
+					"status":        model.ErrandStatusPendingConfirm,
+					"pay_expire_at": nil,
+				}).Error; err != nil {
+					return err
+				}
+				if err := tx.Model(&d).Updates(map[string]interface{}{
+					"status":       model.DeliveryDelivered,
+					"delivered_at": now,
+				}).Error; err != nil {
+					return err
+				}
+				AppendFulfillmentEventInTx(tx, FulfillmentEventInput{
+					SubjectType: model.FulfillmentSubjectErrand,
+					SubjectID:   eo.ID,
+					EventCode:   "delivered",
+					ActorRole:   model.FulfillmentActorRider,
+					ActorID:     &riderID,
+					Title:       "骑手已送达（跑腿费已在线支付）",
+				})
+				eo.PayMode = model.ErrandPayModePlatform
+				eo.Status = model.ErrandStatusPendingConfirm
+				eo.PayExpireAt = nil
+				createdEarning = true
 			}
 		case model.ErrandPayModeCash:
 			now := time.Now()
-			if err := tx.Model(&eo).Updates(map[string]interface{}{
+			collected := goods
+			updates := map[string]interface{}{
 				"pay_mode":         model.ErrandPayModeCash,
-				"pay_amount":       payAmount,
-				"collected_amount": payAmount,
-				"pay_status":       model.PayStatusPaid,
-				"paid_at":          now,
+				"collected_amount": collected,
 				"status":           model.ErrandStatusPendingConfirm,
 				"pay_expire_at":    nil,
-			}).Error; err != nil {
+			}
+			if legacy {
+				updates["pay_status"] = model.PayStatusPaid
+				updates["paid_at"] = now
+				collected = payAmount
+				updates["collected_amount"] = payAmount
+			} else {
+				updates["goods_pay_status"] = model.PayStatusPaid
+			}
+			if err := tx.Model(&eo).Updates(updates).Error; err != nil {
 				return err
 			}
 			if err := tx.Model(&d).Updates(map[string]interface{}{
@@ -546,13 +644,18 @@ func (s *ErrandService) RiderComplete(riderID, id uint64, payMode uint8) (*Erran
 				ActorRole:   model.FulfillmentActorRider,
 				ActorID:     &riderID,
 				Title:       "骑手已送达并收取现金",
-				Detail:      map[string]interface{}{"amount": payAmount},
+				Detail:      map[string]interface{}{"amount": collected},
 			})
 			eo.PayMode = model.ErrandPayModeCash
 			eo.PayAmount = payAmount
-			eo.CollectedAmount = payAmount
-			eo.PayStatus = model.PayStatusPaid
+			eo.CollectedAmount = collected
+			if legacy {
+				eo.PayStatus = model.PayStatusPaid
+			} else {
+				eo.GoodsPayStatus = model.PayStatusPaid
+			}
 			eo.Status = model.ErrandStatusPendingConfirm
+			eo.PayExpireAt = nil
 			createdEarning = true
 		default:
 			return fmt.Errorf("%w: 请选择收款方式", ErrErrandStatusInvalid)
@@ -567,7 +670,8 @@ func (s *ErrandService) RiderComplete(riderID, id uint64, payMode uint8) (*Erran
 	return out, nil
 }
 
-// CreatePrepay 用户对跑腿单发起平台支付（送达时）。
+// CreatePrepay 用户对跑腿单发起平台支付：
+// 待支付状态下付跑腿费；已接单/配送中且为代购单时付商品费（独立支付单号，加 G 后缀）。
 func (s *ErrandService) CreatePrepay(accountID, id uint64) (*payment.PrepayResult, error) {
 	var eo model.ErrandOrder
 	if err := query.NotDeleted(s.DB).Where("id = ? AND account_id = ?", id, accountID).First(&eo).Error; err != nil {
@@ -576,20 +680,44 @@ func (s *ErrandService) CreatePrepay(accountID, id uint64) (*payment.PrepayResul
 		}
 		return nil, err
 	}
-	if eo.Status != model.ErrandStatusAccepted && eo.Status != model.ErrandStatusDelivering {
+	isPrepay := eo.Status == model.ErrandStatusPendingPay
+	if !isPrepay && eo.Status != model.ErrandStatusAccepted && eo.Status != model.ErrandStatusDelivering {
 		return nil, fmt.Errorf("%w: 当前状态不可支付", ErrErrandStatusInvalid)
 	}
-	if eo.PayStatus != model.PayStatusUnpaid {
-		return &payment.PrepayResult{Provider: s.paymentProvider().Name(), AlreadyPaid: true, NeedPay: false, Message: "订单已支付"}, nil
-	}
-	if eo.PayMode == 0 {
-		if err := s.DB.Model(&eo).Update("pay_mode", model.ErrandPayModePlatform).Error; err != nil {
-			return nil, err
+	var amount float64
+	var orderNo string
+	if isPrepay {
+		if eo.PayStatus != model.PayStatusUnpaid {
+			return &payment.PrepayResult{Provider: s.paymentProvider().Name(), AlreadyPaid: true, NeedPay: false, Message: "跑腿费已支付"}, nil
 		}
+		if eo.PayExpireAt != nil && time.Now().After(*eo.PayExpireAt) {
+			return nil, fmt.Errorf("%w: 支付已超时，请重新下单", ErrErrandStatusInvalid)
+		}
+		amount, orderNo = roundMoney(eo.PayAmount), eo.OrderNo
+		if amount <= 0 {
+			return nil, fmt.Errorf("%w: 跑腿费金额异常", ErrErrandStatusInvalid)
+		}
+	} else {
+		if eo.PayMode == 0 {
+			if err := s.DB.Model(&eo).Update("pay_mode", model.ErrandPayModePlatform).Error; err != nil {
+				return nil, err
+			}
+		}
+		amount = roundMoney(eo.GoodsAmount)
+		if amount <= 0 {
+			return &payment.PrepayResult{Provider: s.paymentProvider().Name(), AlreadyPaid: true, NeedPay: false, Message: "无需支付商品费"}, nil
+		}
+		if eo.GoodsPayStatus == model.PayStatusPaid {
+			return &payment.PrepayResult{Provider: s.paymentProvider().Name(), AlreadyPaid: true, NeedPay: false, Message: "商品费已支付"}, nil
+		}
+		orderNo = payment.GoodsOrderNo(eo.OrderNo)
 	}
-	sub, err := payment.ErrandSubjectFromID(s.DB, eo.ID, 0)
-	if err != nil {
-		return nil, err
+	sub := payment.PaySubject{
+		Type:      model.PaySubjectErrand,
+		ID:        eo.ID,
+		OrderNo:   orderNo,
+		Amount:    amount,
+		AccountID: eo.AccountID,
 	}
 	return s.paymentProvider().CreatePrepayForSubject(sub)
 }
@@ -937,17 +1065,46 @@ func (s *ErrandService) AdminCancel(id uint64, remark string) (*ErrandView, erro
 			First(&eo, id).Error; err != nil {
 			return ErrErrandNotFound
 		}
-		if eo.Status != model.ErrandStatusException && eo.Status != model.ErrandStatusPendingConfirm {
+		if eo.Status != model.ErrandStatusPendingPay &&
+			eo.Status != model.ErrandStatusPendingAccept &&
+			eo.Status != model.ErrandStatusAccepted &&
+			eo.Status != model.ErrandStatusException &&
+			eo.Status != model.ErrandStatusPendingConfirm {
 			return fmt.Errorf("%w: 当前状态不可取消", ErrErrandStatusInvalid)
 		}
 		note := appendAdminRemark(eo.ExceptionReason, remark)
-		if eo.PayMode == model.ErrandPayModePlatform && eo.PayStatus == model.PayStatusPaid {
-			sub, err := payment.ErrandSubjectFromID(tx, eo.ID, 0)
-			if err != nil {
-				return err
+		if eo.PayMode != model.ErrandPayModeCash {
+			// 旧「0 元下单」流程：跑腿费与商品费一次付清，退剩余全部
+			legacy := (eo.Status == model.ErrandStatusPendingConfirm || eo.Status == model.ErrandStatusException) &&
+				eo.GoodsPayStatus == model.PayStatusUnpaid && eo.GoodsAmount > 0
+			if eo.PayStatus == model.PayStatusPaid {
+				sub := payment.PaySubject{
+					Type:      model.PaySubjectErrand,
+					ID:        eo.ID,
+					OrderNo:   eo.OrderNo,
+					Amount:    eo.DeliveryFee,
+					AccountID: eo.AccountID,
+				}
+				refundAmount := eo.DeliveryFee
+				if legacy {
+					refundAmount = 0
+					sub.Amount = eo.PayAmount
+				}
+				if err := s.paymentProvider().RefundSubjectAmountInTx(tx, sub, refundAmount, "管理员取消跑腿退款"); err != nil {
+					return err
+				}
 			}
-			if err := s.paymentProvider().RefundSubjectAmountInTx(tx, sub, 0, "管理员取消跑腿退款"); err != nil {
-				return err
+			if !legacy && eo.GoodsPayStatus == model.PayStatusPaid && eo.GoodsAmount > 0 {
+				goodsSub := payment.PaySubject{
+					Type:      model.PaySubjectErrand,
+					ID:        eo.ID,
+					OrderNo:   payment.GoodsOrderNo(eo.OrderNo),
+					Amount:    eo.GoodsAmount,
+					AccountID: eo.AccountID,
+				}
+				if err := s.paymentProvider().RefundSubjectAmountInTx(tx, goodsSub, eo.GoodsAmount, "管理员取消跑腿退还商品费"); err != nil {
+					return err
+				}
 			}
 		}
 		if err := tx.Model(&eo).Updates(map[string]interface{}{

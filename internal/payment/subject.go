@@ -29,6 +29,15 @@ func (s PaySubject) Validate() error {
 	return nil
 }
 
+// GoodsOrderNoSuffix 跑腿代购商品费支付单后缀（同一跑腿单第二次支付时使用）。
+const GoodsOrderNoSuffix = "G"
+
+// GoodsOrderNo 生成跑腿商品费支付单号（在跑腿订单号后加后缀）。
+func GoodsOrderNo(orderNo string) string { return orderNo + GoodsOrderNoSuffix }
+
+// IsGoodsOrderNo 判断是否为跑腿商品费支付单号。
+func IsGoodsOrderNo(orderNo string) bool { return strings.HasSuffix(orderNo, GoodsOrderNoSuffix) }
+
 // SubjectTypeFromOrderNo 按业务单号前缀推断支付主体类型。
 func SubjectTypeFromOrderNo(orderNo string) string {
 	switch {
@@ -127,15 +136,25 @@ func ResolveSubjectByOrderNo(db *gorm.DB, orderNo string) (PaySubject, error) {
 	subType := SubjectTypeFromOrderNo(orderNo)
 	switch subType {
 	case model.PaySubjectErrand:
+		// 商品费支付单号为「跑腿订单号 + G」，回查时需按基础单号匹配并按商品费金额校验。
+		baseNo := orderNo
+		isGoods := IsGoodsOrderNo(orderNo)
+		if isGoods {
+			baseNo = strings.TrimSuffix(orderNo, GoodsOrderNoSuffix)
+		}
 		var eo model.ErrandOrder
-		if err := query.NotDeleted(db).Where("order_no = ?", orderNo).First(&eo).Error; err != nil {
+		if err := query.NotDeleted(db).Where("order_no = ?", baseNo).First(&eo).Error; err != nil {
 			return PaySubject{}, err
+		}
+		amount := eo.PayAmount
+		if isGoods {
+			amount = eo.GoodsAmount
 		}
 		return PaySubject{
 			Type:      model.PaySubjectErrand,
 			ID:        eo.ID,
-			OrderNo:   eo.OrderNo,
-			Amount:    eo.PayAmount,
+			OrderNo:   orderNo,
+			Amount:    amount,
 			AccountID: eo.AccountID,
 		}, nil
 	case model.PaySubjectTakeout:
